@@ -34,6 +34,8 @@ every 1000 steps for progress info, but nothing acts on it now.
 (A sibling file, run_model_Hof_dense.py, is a separate copy of THIS file
 with one further addition -- see that file's own docstring.)
 
+-Removed abort if alpha_ss is "out of range"
+
 
 WHAT THIS RUNS
 --------------
@@ -679,10 +681,10 @@ def run_model(config, cli_output_dir=None):
     # Sanity check: outside this range the alpha-solve above is not
     # meaningful (either essentially inviscid, or so viscous the disc
     # wouldn't survive), so there's no point integrating it forward.
-    if (alpha_SS > 0.1) or (alpha_SS < 1e-5):
-        print(f"Not running model - alpha_SS out of range. "
-              f"alpha={eos.alpha}, Rd={disc_params['Rd']}, Mdisk={disc.Mtot()/Msun:.4g} Msun")
-        return
+    # # if (alpha_SS > 0.1) or (alpha_SS < 1e-5):
+    #     print(f"Not running model - alpha_SS out of range. "
+    #           f"alpha={eos.alpha}, Rd={disc_params['Rd']}, Mdisk={disc.Mtot()/Msun:.4g} Msun")
+    #     return
     print(f"Running model. alpha={eos.alpha}, Rd={disc_params['Rd']}, "
           f"Mdisk={disc.Mtot()/Msun:.4g} Msun")
 

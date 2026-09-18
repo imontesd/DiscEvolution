@@ -423,13 +423,13 @@ class HybridWindModel(object):
     def _init_fluxes_wind(self, disc, dt=0):
         """Compute the flux and mass-loss rate due to the wind"""
         #Use first order Donor cell method:
-        v_DW = 1.5 * (disc.nu/disc.R) * self._psi
+        v_DW = 1.5 * (disc.nu/disc.R) * self._psi #v_DW = 0 if psi = 0 (viscous limit)
 
         F = np.zeros(len(disc.Sigma_G) + 1, dtype='f8')
         F[:-1] = v_DW * disc.Sigma_G
 
         # Outer boundary
-        if self._bound == 'Zero':
+        if self._bound == 'Zero' or self._psi == 0 :    # visocus limit edge case (psi = 0), flux is necessarily zero
             F[-1] = 0
         else:
             F[-1] = F[-2] * (v_DW[-1]*disc.R[-1]) / (v_DW[-2]*disc.R[-2])
@@ -487,6 +487,11 @@ class HybridWindModel(object):
         t_visc = ((dXe2 * grid.Rc) / (2 * 3 * nu)).min()
 
         v_DW   = 1.5 * (disc.nu/grid.Rc) * self._psi
+        
+        # Add purely viscous limit to avoid dividing by zero
+        if self._psi == 0:
+            t_wind = np.inf
+
         t_wind = (np.diff(0.5*grid.Re**2) / (grid.Rc * v_DW)).min()
 
         return self._tol * min(t_visc, t_wind)

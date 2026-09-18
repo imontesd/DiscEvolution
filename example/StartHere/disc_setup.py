@@ -97,7 +97,7 @@ def winds_alpha_disc(grid, star, disc_params, eos_params, wind_params, kappa):
 
     psi = wind_params["psi_DW"]               # wind mass-loss parameter
     e_rad = wind_params["e_rad"]               # wind lever-arm efficiency
-    if psi > 0:
+    if psi > 0 and e_rad < 1.0:
         lambda_DW = 1 / (2 * (1 - e_rad) * (3 / psi + 1)) + 1
     else:
         # Pure-viscous limit (psi -> 0): the wind velocity v_DW in
