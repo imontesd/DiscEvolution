@@ -10,20 +10,31 @@ Isaac Montesdeoca Hof Co-op Project Fall 2026
 
 THIS FILE vs. run_model_Hof.py
 -------------------------------
-This is a copy of run_model_Hof.py with ONE additional feature: one chosen
-disc observable -- set by the DENSE_VARIABLE constant just below the imports
--- is ALSO recorded at the DENSE `t` cadence (every 5 steps, the same
-cadence `disk_Mdot_star`/`disk_Mass`/`Tc`/`Sigc` already use), in addition
-to its normal recording at the sparse `time_snap` cadence. That dense export
-is further restricted to a chosen simulation-time WINDOW (DENSE_T_MIN_MYR /
-DENSE_T_MAX_MYR, in Myr) rather than the whole run, to keep the extra file
-size down -- the resulting "<DENSE_VARIABLE>_dense" dataset therefore does
-NOT line up row-for-row with `t` the way the other dense series do, so it
-carries its own per-row timestamp dataset, "<DENSE_VARIABLE>_dense_t"
-[years]. Everything else (physics, config schema, other datasets) is
-identical to run_model_Hof.py. See LOG OF CHANGES MADE below for the exact
-edits, and the DENSE_VARIABLE / DENSE_T_MIN_MYR / DENSE_T_MAX_MYR comments
-for how to point this at a different observable or window.
+This is a copy of run_model_Hof.py with ONE additional feature: one OR MORE
+chosen disc observables -- set by the DENSE_VARIABLES list constant just
+below the imports -- are ALSO recorded at the DENSE `t` cadence (every 5
+steps, the same cadence `disk_Mdot_star`/`disk_Mass`/`Tc`/`Sigc` already
+use), in addition to their normal recording at the sparse `time_snap`
+cadence. That dense export is further restricted to a chosen simulation-time
+WINDOW (DENSE_T_MIN_MYR / DENSE_T_MAX_MYR, in Myr) rather than the whole
+run, to keep the extra file size down -- the resulting "<name>_dense"
+dataset (one per entry in DENSE_VARIABLES) therefore does NOT line up
+row-for-row with `t` the way the other dense series do, so each one carries
+its own per-row timestamp dataset, "<name>_dense_t" [years]. Everything else
+(physics, config schema, other datasets) is identical to run_model_Hof.py.
+See LOG OF CHANGES MADE below for the exact edits, and the DENSE_VARIABLES /
+DENSE_T_MIN_MYR / DENSE_T_MAX_MYR comments for how to point this at
+different observables or a different window.
+
+(2026-09-18 UPDATE) DENSE_VARIABLE (a single string) was generalized to
+DENSE_VARIABLES (a list of strings), so more than one observable can be
+densely exported from the same run in one pass -- e.g.
+DENSE_VARIABLES = ["Sigma_G", "T", "Sigma_dust"] writes three independent
+"<name>_dense" / "<name>_dense_t" dataset pairs, one per list entry, each
+windowed by the same DENSE_T_MIN_MYR/DENSE_T_MAX_MYR. A single-entry list
+(the default, ["Sigma_G"]) reproduces the old one-variable behaviour and
+output exactly (same dataset names). Note the file-size cost from the
+original NOTE ON FILE SIZE below now multiplies by len(DENSE_VARIABLES).
 
 LOG OF CHANGES MADE (relative to run_model_student.py, same as run_model_Hof.py
 except where marked "this file only")
@@ -43,9 +54,9 @@ config["simulation"]["eta_abort_hours"] lookup and the --eta_abort_hours
 CLI flag along with it (both are now unused; a config file that still sets
 eta_abort_hours is harmless, it's just ignored).
 
--(this file only, vs. run_model_Hof.py) Added dense-cadence export of ONE
-chosen disc observable (DENSE_VARIABLE, default "Sigma_G"): a new
-"<DENSE_VARIABLE>_dense" HDF5 dataset, shape (0, nR) -> (n_dense, nR),
+-(this file only, vs. run_model_Hof.py) Added dense-cadence export of ONE OR
+MORE chosen disc observables (DENSE_VARIABLES, default ["Sigma_G"]): a new
+"<name>_dense" HDF5 dataset per entry, shape (0, nR) -> (n_dense, nR),
 a candidate write every 5 steps alongside t/disk_Mdot_star/disk_Mass/Tc/Sigc.
 Also renamed the output filename to insert "_dense" right after run_name
 (see output_filename()), so dense-export files are distinguishable from
@@ -56,11 +67,18 @@ on disk.
 time window: DENSE_T_MIN_MYR / DENSE_T_MAX_MYR (Myr, both near the top of
 this file, default 2.0-3.0). write_dense_variable_row() (new function) only
 actually appends a row while t falls inside that window; outside it, the
-candidate write every 5 steps is a no-op. Consequently
-"<DENSE_VARIABLE>_dense" is generally SHORTER than `t` and does NOT align
-with it by row index -- a new companion dataset, "<DENSE_VARIABLE>_dense_t"
-[years], carries the matching timestamp for each row that WAS written, so
-the two can still be zipped/plotted together correctly.
+candidate write every 5 steps is a no-op. Consequently each "<name>_dense"
+is generally SHORTER than `t` and does NOT align with it by row index -- a
+companion dataset per variable, "<name>_dense_t" [years], carries the
+matching timestamp for each row that WAS written, so the two can still be
+zipped/plotted together correctly.
+
+-(this file only, 2026-09-18) Generalized DENSE_VARIABLE (single string) to
+DENSE_VARIABLES (list of strings), and made write_dense_variable_row() /
+create_output_file() loop over that list -- so any number of observables
+can be exported at the dense cadence from a single run, each getting its
+own "<name>_dense" / "<name>_dense_t" dataset pair. See the 2026-09-18
+UPDATE note above and the DENSE_VARIABLES comment near the top of the file.
 
 
 WHAT THIS RUNS
@@ -145,24 +163,30 @@ GAS_SOLVER = ViscousEvolutionFV   # viscous-evolution scheme used when winds are
 # ----------------------------------------------------------------------------
 # Dense-export configuration (this file only, vs. run_model_Hof.py)
 # ----------------------------------------------------------------------------
-# Name of the ONE disc observable to additionally record at the DENSE `t`
+# List of disc observable names to additionally record at the DENSE `t`
 # cadence (every 5 steps), instead of only at the 13-point `time_snap`
 # cadence every other profile dataset (Sigma_G, T, Sigma_dust, ...) is stuck
-# with. Must be the name of a `disc` property/attribute that is a 1D array
-# of length nR (one value per radial cell) -- e.g. "Sigma_G", "Sigma", "T",
-# "H", "midplane_gas_density". Looked up via getattr(disc, DENSE_VARIABLE)
-# in _integrate() below, so changing this one line is all that's needed to
-# densely export a different observable; no other code changes required.
+# with. (CHANGED 2026-09-18: this used to be a single string, DENSE_VARIABLE;
+# it is now a list, DENSE_VARIABLES, so more than one observable can be
+# densely exported in the same run -- keep the default single-entry list
+# below to reproduce the old behaviour exactly.) Each entry must be the name
+# of a `disc` property/attribute that is a 1D array of length nR (one value
+# per radial cell) -- e.g. "Sigma_G", "Sigma", "T", "H",
+# "midplane_gas_density". Each is looked up via getattr(disc, name) in
+# write_dense_variable_row() below, so editing this list is all that's
+# needed to change which observables get densely exported; no other code
+# changes required.
 #
-# Units: whatever that `disc` property's native units are (see disc.py's
+# Units: whatever each `disc` property's native units are (see disc.py's
 # docstrings / CLAUDE.md's units table) -- e.g. Sigma_G is g/cm^2, T is K.
 #
 # NOTE ON FILE SIZE: unlike the scalar dense series (disk_Mdot_star etc.,
-# one float per row), this writes a full nR-length row every 5 steps. For a
-# long run (thousands of dense rows) x a fine grid (nr ~ 100-1000), this can
-# add tens of MB to the output file -- acceptable for a single chosen
-# variable, but this mechanism intentionally supports only ONE at a time.
-DENSE_VARIABLE = "Sigma_G"
+# one float per row), this writes a full nR-length row every 5 steps, PER
+# VARIABLE in this list. For a long run (thousands of dense rows) x a fine
+# grid (nr ~ 100-1000), a single variable can already add tens of MB to the
+# output file -- that cost now multiplies by len(DENSE_VARIABLES), so keep
+# this list to only the observables you actually need.
+DENSE_VARIABLES = ["Sigma_G"]
 
 # Restrict the dense export above to this simulation-time window [Myr]
 # (inclusive on both ends), rather than writing it for the whole run -- keeps
@@ -459,18 +483,26 @@ def grow_and_set(dset, value):
 
 def write_dense_variable_row(h5f, disc, t_code):
     """
-    (this file only) Append one row to "<DENSE_VARIABLE>_dense" -- but ONLY if
-    `t_code` (current simulation time, in CODE-time units, i.e. what the
-    `t` accumulator in _integrate() holds) falls inside the
-    [DENSE_T_MIN_MYR, DENSE_T_MAX_MYR] window. Outside that window, this is a
-    no-op: nothing is appended, so the dataset ends up SHORTER than the main
-    `t` dataset -- unlike every other dense series here, which is always the
-    same length as `t` and lines up with it by row index.
+    (this file only) Append one row to "<name>_dense", for EVERY name in
+    DENSE_VARIABLES -- but ONLY if `t_code` (current simulation time, in
+    CODE-time units, i.e. what the `t` accumulator in _integrate() holds)
+    falls inside the [DENSE_T_MIN_MYR, DENSE_T_MAX_MYR] window. Outside that
+    window, this is a no-op for all variables: nothing is appended, so each
+    dataset ends up SHORTER than the main `t` dataset -- unlike every other
+    dense series here, which is always the same length as `t` and lines up
+    with it by row index.
 
     Because of that, each written row also gets a matching timestamp appended
-    to "<DENSE_VARIABLE>_dense_t" [years, same convention as the `t` dataset],
-    so the two arrays can be zipped together (or plotted against each other)
-    without relying on row-index alignment to the full `t` series.
+    to "<name>_dense_t" [years, same convention as the `t` dataset], so the
+    two arrays for a given variable can be zipped together (or plotted
+    against each other) without relying on row-index alignment to the full
+    `t` series.
+
+    (CHANGED 2026-09-18: this loops over DENSE_VARIABLES -- a list -- instead
+    of handling one hardcoded DENSE_VARIABLE name; the window check is done
+    once per call and applies identically to every variable in the list, so
+    all dense datasets stay the same length as each other, just not the same
+    length as `t`.)
 
     Called at the same two call sites, and the same cadence, as the other
     dense scalar writes (t, disk_Mdot_star, disk_Mass, Tc, Sigc) in
@@ -479,8 +511,9 @@ def write_dense_variable_row(h5f, disc, t_code):
     t_myr = t_code / (1e6 * yr)   # same conversion write_disc_snapshot() uses for time_snap
     if not (DENSE_T_MIN_MYR <= t_myr <= DENSE_T_MAX_MYR):
         return
-    grow_and_set(h5f[f"{DENSE_VARIABLE}_dense"], getattr(disc, DENSE_VARIABLE))
-    grow_and_set(h5f[f"{DENSE_VARIABLE}_dense_t"], t_code / yr)   # years
+    for name in DENSE_VARIABLES:
+        grow_and_set(h5f[f"{name}_dense"], getattr(disc, name))
+        grow_and_set(h5f[f"{name}_dense_t"], t_code / yr)   # years
 
 
 def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
@@ -501,16 +534,19 @@ def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
     for name in ["t", "disk_Mdot_star", "disk_Mass", "Tc", "Sigc"]:
         h5f.create_dataset(name, shape=(0,), maxshape=(None,), dtype="f8")
 
-    # ---- (this file only) dense-cadence profile of DENSE_VARIABLE ----
-    # One row of length nR appended every 5 steps, but ONLY while
-    # t is inside [DENSE_T_MIN_MYR, DENSE_T_MAX_MYR] -- see write_dense_
-    # variable_row() and the DENSE_VARIABLE / DENSE_T_MIN_MYR / DENSE_T_MAX_MYR
-    # comments near the top of this file. Because of that window, this
+    # ---- (this file only) dense-cadence profile(s) of DENSE_VARIABLES ----
+    # One row of length nR appended every 5 steps PER variable, but ONLY
+    # while t is inside [DENSE_T_MIN_MYR, DENSE_T_MAX_MYR] -- see write_dense_
+    # variable_row() and the DENSE_VARIABLES / DENSE_T_MIN_MYR / DENSE_T_MAX_MYR
+    # comments near the top of this file. Because of that window, each
     # dataset is generally SHORTER than `t` and does NOT align with it by row
-    # index -- "<DENSE_VARIABLE>_dense_t" [years] carries the matching
-    # per-row timestamp instead.
-    h5f.create_dataset(f"{DENSE_VARIABLE}_dense", shape=(0, nR), maxshape=(None, nR), dtype="f8")
-    h5f.create_dataset(f"{DENSE_VARIABLE}_dense_t", shape=(0,), maxshape=(None,), dtype="f8")
+    # index -- "<name>_dense_t" [years] carries the matching per-row
+    # timestamp instead. (CHANGED 2026-09-18: loops over DENSE_VARIABLES --
+    # a list -- creating one "<name>_dense"/"<name>_dense_t" pair per entry,
+    # instead of one hardcoded pair for a single DENSE_VARIABLE.)
+    for name in DENSE_VARIABLES:
+        h5f.create_dataset(f"{name}_dense", shape=(0, nR), maxshape=(None, nR), dtype="f8")
+        h5f.create_dataset(f"{name}_dense_t", shape=(0,), maxshape=(None,), dtype="f8")
 
     # ---- per-planet time series ----
     groups = {}
@@ -840,11 +876,12 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
         grow_and_set(h5f["disk_Mass"], disc.Mtot())
         grow_and_set(h5f["Tc"], disc.T[0])
         grow_and_set(h5f["Sigc"], disc.Sigma[0])
-        # (this file only) dense-cadence row for DENSE_VARIABLE -- only
-        # actually written if t=0 falls inside the [DENSE_T_MIN_MYR,
-        # DENSE_T_MAX_MYR] window (it won't, for any window starting > 0).
-        # See write_dense_variable_row() and the DENSE_VARIABLE /
-        # DENSE_T_MIN_MYR / DENSE_T_MAX_MYR comments near top of file.
+        # (this file only) dense-cadence row for every variable in
+        # DENSE_VARIABLES -- only actually written if t=0 falls inside the
+        # [DENSE_T_MIN_MYR, DENSE_T_MAX_MYR] window (it won't, for any window
+        # starting > 0). See write_dense_variable_row() and the
+        # DENSE_VARIABLES / DENSE_T_MIN_MYR / DENSE_T_MAX_MYR comments near
+        # top of file.
         write_dense_variable_row(h5f, disc, 0.0)
         if planets is not None:
             write_planet_row(h5f, groups, planets, planet_model, disc, grid, disk_Mdot,
@@ -954,12 +991,13 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
                 grow_and_set(h5f["disk_Mass"], disc.Mtot())
                 grow_and_set(h5f["Tc"], disc.T[0])
                 grow_and_set(h5f["Sigc"], disc.Sigma[0])
-                # (this file only) dense-cadence row for DENSE_VARIABLE, same
-                # candidate cadence as t/disk_Mdot_star/disk_Mass/Tc/Sigc
-                # above, but only actually appended while t is inside
-                # [DENSE_T_MIN_MYR, DENSE_T_MAX_MYR] -- see
-                # write_dense_variable_row() and the DENSE_VARIABLE /
-                # DENSE_T_MIN_MYR / DENSE_T_MAX_MYR comments near top of file.
+                # (this file only) dense-cadence row for every variable in
+                # DENSE_VARIABLES, same candidate cadence as
+                # t/disk_Mdot_star/disk_Mass/Tc/Sigc above, but only actually
+                # appended while t is inside [DENSE_T_MIN_MYR,
+                # DENSE_T_MAX_MYR] -- see write_dense_variable_row() and the
+                # DENSE_VARIABLES / DENSE_T_MIN_MYR / DENSE_T_MAX_MYR
+                # comments near top of file.
                 write_dense_variable_row(h5f, disc, t)
                 if planets is not None:
                     write_planet_row(h5f, groups, planets, planet_model, disc, grid, disk_Mdot,
