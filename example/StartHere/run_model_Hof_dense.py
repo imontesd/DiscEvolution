@@ -80,6 +80,19 @@ can be exported at the dense cadence from a single run, each getting its
 own "<name>_dense" / "<name>_dense_t" dataset pair. See the 2026-09-18
 UPDATE note above and the DENSE_VARIABLES comment near the top of the file.
 
+-(this file only, 2026-09-18 bugfix) Fixed AttributeError('DustGrowthTwoPop'
+object has no attribute 'Sigma_dust') raised the first time DENSE_VARIABLES
+included "Sigma_dust" (or "Sigma_pebbles"): those are the names
+write_disc_snapshot() uses for the time_snap dataset, but disc itself only
+exposes the combined disc.Sigma_D array (index 0 = grains, 1 = pebbles, 2 =
+planetesimals), not a `disc.Sigma_dust` attribute directly. Added
+_resolve_dense_variable() (new function, just above write_dense_variable_
+row()) which special-cases "Sigma_dust" -> disc.Sigma_D[0], "Sigma_pebbles"
+-> disc.Sigma_D[1], "Sigma_planetesimals" -> disc.Sigma_D[2], and falls back
+to plain getattr(disc, name) for every other DENSE_VARIABLES entry (e.g.
+"Sigma_G", "T"). write_dense_variable_row() now calls this instead of
+calling getattr() directly.
+
 
 WHAT THIS RUNS
 --------------
@@ -169,13 +182,17 @@ GAS_SOLVER = ViscousEvolutionFV   # viscous-evolution scheme used when winds are
 # with. (CHANGED 2026-09-18: this used to be a single string, DENSE_VARIABLE;
 # it is now a list, DENSE_VARIABLES, so more than one observable can be
 # densely exported in the same run -- keep the default single-entry list
-# below to reproduce the old behaviour exactly.) Each entry must be the name
-# of a `disc` property/attribute that is a 1D array of length nR (one value
-# per radial cell) -- e.g. "Sigma_G", "Sigma", "T", "H",
-# "midplane_gas_density". Each is looked up via getattr(disc, name) in
-# write_dense_variable_row() below, so editing this list is all that's
-# needed to change which observables get densely exported; no other code
-# changes required.
+# below to reproduce the old behaviour exactly.) Each entry must be either
+# the name of a `disc` property/attribute that is a 1D array of length nR
+# (one value per radial cell) -- e.g. "Sigma_G", "Sigma", "T", "H",
+# "midplane_gas_density" -- OR one of the special-cased dust-species aliases
+# "Sigma_dust" (grains) / "Sigma_pebbles" (pebbles) / "Sigma_planetesimals"
+# (requires config["planetesimal"]["active"] = true), which match the
+# dataset names write_disc_snapshot() uses at the time_snap cadence but are
+# NOT themselves disc attributes (they're slices of disc.Sigma_D). Each name
+# is resolved via _resolve_dense_variable() in write_dense_variable_row()
+# below, so editing this list is all that's needed to change which
+# observables get densely exported; no other code changes required.
 #
 # Units: whatever each `disc` property's native units are (see disc.py's
 # docstrings / CLAUDE.md's units table) -- e.g. Sigma_G is g/cm^2, T is K.
@@ -186,7 +203,8 @@ GAS_SOLVER = ViscousEvolutionFV   # viscous-evolution scheme used when winds are
 # grid (nr ~ 100-1000), a single variable can already add tens of MB to the
 # output file -- that cost now multiplies by len(DENSE_VARIABLES), so keep
 # this list to only the observables you actually need.
-DENSE_VARIABLES = ["Sigma_G"]
+
+DENSE_VARIABLES = ["Sigma_G", "Sigma_dust", "Sigma_pebbles"]
 
 # Restrict the dense export above to this simulation-time window [Myr]
 # (inclusive on both ends), rather than writing it for the whole run -- keeps
@@ -195,7 +213,7 @@ DENSE_VARIABLES = ["Sigma_G"]
 # snapshot() uses for time_snap), so units here are Myr, matching time_snap.
 # To recover "export for the whole run" behaviour, set DENSE_T_MIN_MYR = 0.0
 # and DENSE_T_MAX_MYR >= config["simulation"]["t_final"].
-DENSE_T_MIN_MYR = 2.0
+DENSE_T_MIN_MYR = 1.0
 DENSE_T_MAX_MYR = 3.0
 
 
@@ -481,6 +499,39 @@ def grow_and_set(dset, value):
     dset[n] = value
 
 
+def _resolve_dense_variable(disc, name):
+    """
+    (this file only, added 2026-09-18 -- fix for AttributeError on
+    "Sigma_dust"/"Sigma_pebbles") Look up one DENSE_VARIABLES entry on
+    `disc`.
+
+    Most disc observables (e.g. "Sigma_G", "Sigma", "T", "H",
+    "midplane_gas_density") are plain disc properties, so getattr(disc,
+    name) just works. But the *names* used for dust species in the regular
+    time_snap-cadence dataset naming convention -- "Sigma_dust" (grains) and
+    "Sigma_pebbles" (pebbles), see write_disc_snapshot() below -- are NOT
+    themselves disc attributes: disc only exposes the combined dust array
+    disc.Sigma_D, indexed by species (0 = grains, 1 = pebbles, 2 =
+    planetesimals, only present if config["planetesimal"]["active"] is
+    true). This resolves those two aliases the same way write_disc_
+    snapshot() does, so DENSE_VARIABLES can name them exactly like the
+    time_snap datasets do, and falls back to plain getattr() for every
+    other name.
+    """
+    aliases = {
+        "Sigma_dust": lambda d: d.Sigma_D[0],       # grains, g/cm^2
+        "Sigma_pebbles": lambda d: d.Sigma_D[1],    # pebbles, g/cm^2
+        # planetesimals only exist as a 3rd Sigma_D row when planetesimal
+        # formation is turned on (config["planetesimal"]["active"] = true);
+        # using this alias with planetesimals off will raise an IndexError,
+        # which is the correct behaviour (nothing to densely export).
+        "Sigma_planetesimals": lambda d: d.Sigma_D[2],   # g/cm^2
+    }
+    if name in aliases:
+        return aliases[name](disc)
+    return getattr(disc, name)
+
+
 def write_dense_variable_row(h5f, disc, t_code):
     """
     (this file only) Append one row to "<name>_dense", for EVERY name in
@@ -512,7 +563,7 @@ def write_dense_variable_row(h5f, disc, t_code):
     if not (DENSE_T_MIN_MYR <= t_myr <= DENSE_T_MAX_MYR):
         return
     for name in DENSE_VARIABLES:
-        grow_and_set(h5f[f"{name}_dense"], getattr(disc, name))
+        grow_and_set(h5f[f"{name}_dense"], _resolve_dense_variable(disc, name))
         grow_and_set(h5f[f"{name}_dense_t"], t_code / yr)   # years
 
 
