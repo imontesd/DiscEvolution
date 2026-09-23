@@ -222,7 +222,7 @@ def build_transport(transport_params, wind_params, disc_params, dust_growth_para
     gas = None
     if transport_params['gas_transport']:
         if wind_params["on"]:
-            gas = HybridWindModel(wind_params['psi_DW'], lambda_DW)
+            gas = HybridWindModel(wind_params['psi_DW'], lambda_DW, boundary = "Mdot_inn")
         else:
             gas = GAS_SOLVER()
 

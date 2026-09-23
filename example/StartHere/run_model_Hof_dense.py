@@ -12,9 +12,10 @@ THIS FILE vs. run_model_Hof.py
 -------------------------------
 This is a copy of run_model_Hof.py with ONE additional feature: one OR MORE
 chosen disc observables -- set by the DENSE_VARIABLES list constant just
-below the imports -- are ALSO recorded at the DENSE `t` cadence (every 5
-steps, the same cadence `disk_Mdot_star`/`disk_Mass`/`Tc`/`Sigc` already
-use), in addition to their normal recording at the sparse `time_snap`
+below the imports -- are ALSO recorded at a DENSE `t` cadence (every 1000
+steps as of 2026-09-21; see LOG OF CHANGES MADE below -- previously every 5
+steps, the same cadence `disk_Mdot_star`/`disk_Mass`/`Tc`/`Sigc` still use),
+in addition to their normal recording at the sparse `time_snap`
 cadence. That dense export is further restricted to a chosen simulation-time
 WINDOW (DENSE_T_MIN_MYR / DENSE_T_MAX_MYR, in Myr) rather than the whole
 run, to keep the extra file size down -- the resulting "<name>_dense"
@@ -79,6 +80,33 @@ create_output_file() loop over that list -- so any number of observables
 can be exported at the dense cadence from a single run, each getting its
 own "<name>_dense" / "<name>_dense_t" dataset pair. See the 2026-09-18
 UPDATE note above and the DENSE_VARIABLES comment near the top of the file.
+
+-(this file only, 2026-09-18 bugfix) Fixed AttributeError('DustGrowthTwoPop'
+object has no attribute 'Sigma_dust') raised the first time DENSE_VARIABLES
+included "Sigma_dust" (or "Sigma_pebbles"): those are the names
+write_disc_snapshot() uses for the time_snap dataset, but disc itself only
+exposes the combined disc.Sigma_D array (index 0 = grains, 1 = pebbles, 2 =
+planetesimals), not a `disc.Sigma_dust` attribute directly. Added
+_resolve_dense_variable() (new function, just above write_dense_variable_
+row()) which special-cases "Sigma_dust" -> disc.Sigma_D[0], "Sigma_pebbles"
+-> disc.Sigma_D[1], "Sigma_planetesimals" -> disc.Sigma_D[2], and falls back
+to plain getattr(disc, name) for every other DENSE_VARIABLES entry (e.g.
+"Sigma_G", "T"). write_dense_variable_row() now calls this instead of
+calling getattr() directly.
+
+-(this file only, 2026-09-21) Lowered the DENSE_VARIABLES candidate write
+cadence from every 5 steps to every 1000 steps, per user request, to reduce
+"<name>_dense" file size. The write_dense_variable_row(h5f, disc, t) call in
+_integrate()'s main loop is now gated by its own `if (n % 1000 == 0):` block
+instead of being nested inside the `n % 5` block that still drives the
+scalar series (t, disk_Mdot_star, disk_Mass, Tc, Sigc) and write_planet_row()
+-- those are UNCHANGED at every 5 steps. Only the DENSE_VARIABLES
+observable(s) -- e.g. the default ["Sigma_G", "Sigma_dust",
+"Sigma_pebbles"] -- write less often now. The t=0 seed call to
+write_dense_variable_row() near the top of _integrate() (outside the main
+loop) is unaffected. The DENSE_T_MIN_MYR/DENSE_T_MAX_MYR time-window
+restriction inside write_dense_variable_row() is unchanged and still applies
+on top of this step cadence.
 
 
 WHAT THIS RUNS
@@ -164,29 +192,37 @@ GAS_SOLVER = ViscousEvolutionFV   # viscous-evolution scheme used when winds are
 # Dense-export configuration (this file only, vs. run_model_Hof.py)
 # ----------------------------------------------------------------------------
 # List of disc observable names to additionally record at the DENSE `t`
-# cadence (every 5 steps), instead of only at the 13-point `time_snap`
-# cadence every other profile dataset (Sigma_G, T, Sigma_dust, ...) is stuck
-# with. (CHANGED 2026-09-18: this used to be a single string, DENSE_VARIABLE;
+# cadence (every 1000 steps as of 2026-09-21; was every 5 steps before that
+# -- see LOG OF CHANGES MADE in the module docstring), instead of only at the
+# 13-point `time_snap` cadence every other profile dataset (Sigma_G, T,
+# Sigma_dust, ...) is stuck with. (CHANGED 2026-09-18: this used to be a
+# single string, DENSE_VARIABLE;
 # it is now a list, DENSE_VARIABLES, so more than one observable can be
 # densely exported in the same run -- keep the default single-entry list
-# below to reproduce the old behaviour exactly.) Each entry must be the name
-# of a `disc` property/attribute that is a 1D array of length nR (one value
-# per radial cell) -- e.g. "Sigma_G", "Sigma", "T", "H",
-# "midplane_gas_density". Each is looked up via getattr(disc, name) in
-# write_dense_variable_row() below, so editing this list is all that's
-# needed to change which observables get densely exported; no other code
-# changes required.
+# below to reproduce the old behaviour exactly.) Each entry must be either
+# the name of a `disc` property/attribute that is a 1D array of length nR
+# (one value per radial cell) -- e.g. "Sigma_G", "Sigma", "T", "H",
+# "midplane_gas_density" -- OR one of the special-cased dust-species aliases
+# "Sigma_dust" (grains) / "Sigma_pebbles" (pebbles) / "Sigma_planetesimals"
+# (requires config["planetesimal"]["active"] = true), which match the
+# dataset names write_disc_snapshot() uses at the time_snap cadence but are
+# NOT themselves disc attributes (they're slices of disc.Sigma_D). Each name
+# is resolved via _resolve_dense_variable() in write_dense_variable_row()
+# below, so editing this list is all that's needed to change which
+# observables get densely exported; no other code changes required.
 #
 # Units: whatever each `disc` property's native units are (see disc.py's
 # docstrings / CLAUDE.md's units table) -- e.g. Sigma_G is g/cm^2, T is K.
 #
 # NOTE ON FILE SIZE: unlike the scalar dense series (disk_Mdot_star etc.,
-# one float per row), this writes a full nR-length row every 5 steps, PER
-# VARIABLE in this list. For a long run (thousands of dense rows) x a fine
+# one float per row), this writes a full nR-length row every 1000 steps (was
+# every 5 steps before 2026-09-21), PER VARIABLE in this list. For a long run
+# (thousands of dense rows) x a fine
 # grid (nr ~ 100-1000), a single variable can already add tens of MB to the
 # output file -- that cost now multiplies by len(DENSE_VARIABLES), so keep
 # this list to only the observables you actually need.
-DENSE_VARIABLES = ["Sigma_G"]
+
+DENSE_VARIABLES = ["Sigma_G", "Sigma_dust", "Sigma_pebbles"]
 
 # Restrict the dense export above to this simulation-time window [Myr]
 # (inclusive on both ends), rather than writing it for the whole run -- keeps
@@ -195,7 +231,7 @@ DENSE_VARIABLES = ["Sigma_G"]
 # snapshot() uses for time_snap), so units here are Myr, matching time_snap.
 # To recover "export for the whole run" behaviour, set DENSE_T_MIN_MYR = 0.0
 # and DENSE_T_MAX_MYR >= config["simulation"]["t_final"].
-DENSE_T_MIN_MYR = 2.0
+DENSE_T_MIN_MYR = 1.0
 DENSE_T_MAX_MYR = 3.0
 
 
@@ -481,6 +517,39 @@ def grow_and_set(dset, value):
     dset[n] = value
 
 
+def _resolve_dense_variable(disc, name):
+    """
+    (this file only, added 2026-09-18 -- fix for AttributeError on
+    "Sigma_dust"/"Sigma_pebbles") Look up one DENSE_VARIABLES entry on
+    `disc`.
+
+    Most disc observables (e.g. "Sigma_G", "Sigma", "T", "H",
+    "midplane_gas_density") are plain disc properties, so getattr(disc,
+    name) just works. But the *names* used for dust species in the regular
+    time_snap-cadence dataset naming convention -- "Sigma_dust" (grains) and
+    "Sigma_pebbles" (pebbles), see write_disc_snapshot() below -- are NOT
+    themselves disc attributes: disc only exposes the combined dust array
+    disc.Sigma_D, indexed by species (0 = grains, 1 = pebbles, 2 =
+    planetesimals, only present if config["planetesimal"]["active"] is
+    true). This resolves those two aliases the same way write_disc_
+    snapshot() does, so DENSE_VARIABLES can name them exactly like the
+    time_snap datasets do, and falls back to plain getattr() for every
+    other name.
+    """
+    aliases = {
+        "Sigma_dust": lambda d: d.Sigma_D[0],       # grains, g/cm^2
+        "Sigma_pebbles": lambda d: d.Sigma_D[1],    # pebbles, g/cm^2
+        # planetesimals only exist as a 3rd Sigma_D row when planetesimal
+        # formation is turned on (config["planetesimal"]["active"] = true);
+        # using this alias with planetesimals off will raise an IndexError,
+        # which is the correct behaviour (nothing to densely export).
+        "Sigma_planetesimals": lambda d: d.Sigma_D[2],   # g/cm^2
+    }
+    if name in aliases:
+        return aliases[name](disc)
+    return getattr(disc, name)
+
+
 def write_dense_variable_row(h5f, disc, t_code):
     """
     (this file only) Append one row to "<name>_dense", for EVERY name in
@@ -504,15 +573,18 @@ def write_dense_variable_row(h5f, disc, t_code):
     all dense datasets stay the same length as each other, just not the same
     length as `t`.)
 
-    Called at the same two call sites, and the same cadence, as the other
-    dense scalar writes (t, disk_Mdot_star, disk_Mass, Tc, Sigc) in
-    _integrate() below.
+    Called at two sites in _integrate() below: once to seed a t=0 row, and
+    once per candidate write inside the main loop. (CHANGED 2026-09-21: the
+    main-loop candidate-write cadence is now every 1000 steps, gated by its
+    own `n % 1000` check -- it no longer shares the `n % 5` cadence of the
+    other dense scalar writes, t/disk_Mdot_star/disk_Mass/Tc/Sigc, which are
+    still written every 5 steps.)
     """
     t_myr = t_code / (1e6 * yr)   # same conversion write_disc_snapshot() uses for time_snap
     if not (DENSE_T_MIN_MYR <= t_myr <= DENSE_T_MAX_MYR):
         return
     for name in DENSE_VARIABLES:
-        grow_and_set(h5f[f"{name}_dense"], getattr(disc, name))
+        grow_and_set(h5f[f"{name}_dense"], _resolve_dense_variable(disc, name))
         grow_and_set(h5f[f"{name}_dense_t"], t_code / yr)   # years
 
 
@@ -991,17 +1063,22 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
                 grow_and_set(h5f["disk_Mass"], disc.Mtot())
                 grow_and_set(h5f["Tc"], disc.T[0])
                 grow_and_set(h5f["Sigc"], disc.Sigma[0])
-                # (this file only) dense-cadence row for every variable in
-                # DENSE_VARIABLES, same candidate cadence as
-                # t/disk_Mdot_star/disk_Mass/Tc/Sigc above, but only actually
-                # appended while t is inside [DENSE_T_MIN_MYR,
-                # DENSE_T_MAX_MYR] -- see write_dense_variable_row() and the
-                # DENSE_VARIABLES / DENSE_T_MIN_MYR / DENSE_T_MAX_MYR
-                # comments near top of file.
-                write_dense_variable_row(h5f, disc, t)
                 if planets is not None:
                     write_planet_row(h5f, groups, planets, planet_model, disc, grid, disk_Mdot,
                                       chemistry_params, dust_growth_params)
+
+            # (this file only, CHANGED 2026-09-21) dense-cadence row for every
+            # variable in DENSE_VARIABLES -- candidate write cadence LOWERED
+            # from every 5 steps to every 100 steps (previously piggy-backed
+            # on the "n % 5" block above). Every 100 steps still
+            # gives plenty of time resolution within the DENSE_T_MIN_MYR/
+            # DENSE_T_MAX_MYR window while cutting the row count (and file
+            # size) by ~20x. Still only actually appended while t is inside
+            # [DENSE_T_MIN_MYR, DENSE_T_MAX_MYR] -- see write_dense_
+            # variable_row() and the DENSE_VARIABLES / DENSE_T_MIN_MYR /
+            # DENSE_T_MAX_MYR comments near top of file.
+            if (n % 100 == 0):
+                write_dense_variable_row(h5f, disc, t)
 
         # --- once per requested snapshot time: full disc-profile row ---
         write_disc_snapshot(h5f, disc, config, t, Natom, Nmol)
