@@ -36,6 +36,13 @@ with one further addition -- see that file's own docstring.)
 
 -Removed abort if alpha_ss is "out of range"
 
+-Added steady_state_alpha_guess(): if config['disc']['alpha'] == 'SS', the initial
+ guess for the alpha-calibration loop is computed from steady-state accretion
+ (alpha c_s^2 = Mdot Omega_K / 3 pi Sigma, with T from an alpha-free energy balance)
+ instead of taken from the config. setup_disc receives a deep copy of the config with
+ the numeric guess; the logged config keeps 'SS'. Guess saved as HDF5 attrs
+ 'alpha_guess' and 'alpha_guess_mode'.
+
 
 WHAT THIS RUNS
 --------------
@@ -96,11 +103,14 @@ import json
 import time
 import csv                      # for the per-run config_log/run_log.csv index (log_config(), added for Isaac's Hof project)
 from datetime import datetime   # timestamps for log_config()
+import copy                     # deep-copy config so the 'SS' string in the logged config is preserved (steady-state alpha guess, Hof project)
 
 import numpy as np
 import h5py
 
-from DiscEvolution.constants import AU, Msun, yr
+from DiscEvolution.constants import AU, Msun, yr, Omega0, GasConst, sig_SB   # Omega0, GasConst, sig_SB added for steady_state_alpha_guess()
+from DiscEvolution.disc import AccretionDisc      # Mtot() used to normalise Sigma in steady_state_alpha_guess()
+from DiscEvolution.brent import brentq            # same vectorised Brent solver IrradiatedEOS uses
 from DiscEvolution.grid import Grid
 from DiscEvolution.star import SimpleStar
 from DiscEvolution.opacity import Tazzari2016, Zhu2012
@@ -171,6 +181,107 @@ def compute_ice_lines(chem, grid, threshold=0.5):
                 ice_lines[i] = r1
 
     return ice_lines
+
+
+# ============================================================================
+# Steady-state initial guess for alpha (added for Isaac's Hof project)
+# ============================================================================
+
+def steady_state_alpha_guess(grid, star, config, kappa):
+    """
+    Steady-state estimate of the TOTAL alpha (alpha_SS + alpha_DW), used as the
+    starting guess for the alpha-calibration loop in disc_setup.winds_alpha_disc()
+    when config['disc']['alpha'] == 'SS'.
+
+    Idea: in a steady disc, Mdot = 3 pi nu_SS Sigma (1 + psi), with
+    nu_SS = alpha_SS c_s^2 / Omega_K and alpha = alpha_SS (1 + psi), so
+
+        alpha * c_s^2 = Mdot * Omega_K / (3 pi Sigma)                    (*)
+
+    Substituting (*) into the viscous heating term of IrradiatedEOS removes
+    alpha from the energy balance, so T(R) can be solved from Mdot alone
+    (one Brent solve, no iteration). alpha then follows from (*) with c_s(T).
+
+    Everything below mirrors disc_setup.winds_alpha_disc (Sigma profile) and
+    DiscEvolution/eos.py IrradiatedEOS.update/balance (energy balance), with
+    only the viscous heating term rewritten in terms of Mdot.
+
+    Returns
+    -------
+    alpha_guess : float
+        Total alpha (dimensionless) at the inner cell R_c[0], which is where
+        winds_alpha_disc measures Mdot.
+    """
+    disc_params = config['disc']
+    eos_params = config['eos']
+    wind_params = config['winds']
+
+    # ---- inputs (units in comments) ----
+    Mdot_target = disc_params['Mdot']            # Msun / yr
+    Mdisk = disc_params['M'] * Msun              # g
+    Rd = disc_params['Rd']                       # AU
+    gamma = disc_params['gamma']                 # Sigma power-law index (dimensionless)
+    psi = wind_params['psi_DW']                  # alpha_DW / alpha_SS (dimensionless)
+    e_rad = wind_params['e_rad']                 # fraction of heating radiated (dimensionless)
+    Tmax = eos_params['Tmax']                    # K, temperature cap (same as IrradiatedEOS)
+
+    # IrradiatedEOS defaults (eos.py:315), NOT read from the config.
+    # If these defaults are ever changed in make_eos/IrradiatedEOS, change them here too.
+    Tc = 10.0                                    # K, external/nebular temperature floor
+    mu = 2.4                                     # g / mol, mean molecular weight
+    amax = 1e-5                                  # cm, grain size passed to the opacity
+    tauP_over_tauR = 2.4                         # Planck/Rosseland optical-depth ratio
+    dlogHdlogRm1 = 2 / 7.                        # flaring index used in f_flare
+
+    # Mdot in cgs. Omega0 = 2 pi / (1 yr in s), so 1 yr = 2 pi / Omega0 seconds.
+    sec_per_yr = 2 * np.pi / Omega0              # s / yr
+    Mdot_cgs = Mdot_target * Msun / sec_per_yr   # g / s
+
+    # ---- Sigma(R): identical to disc_setup.winds_alpha_disc ----
+    R = grid.Rc                                  # AU
+    Sigma = (R / Rd) ** (-gamma) * np.exp(-(R / Rd) ** (2 - gamma))
+    Sigma *= Mdisk / AccretionDisc(grid, star, eos=None, Sigma=Sigma).Mtot()   # g / cm^2
+
+    # ---- stellar/geometric factors: identical to IrradiatedEOS.update ----
+    Om_k = Omega0 * star.Omega_k(R)              # s^-1
+    X = star.Rau / R                             # R_star / R (dimensionless)
+    f_flat = (2 / (3 * np.pi)) * X ** 3
+    f_flare = 0.5 * dlogHdlogRm1 * X ** 2
+    star_heat = sig_SB * star.T_eff ** 4         # erg cm^-2 s^-1
+    max_heat = sig_SB * Tmax ** 4                # erg cm^-2 s^-1
+    ext_heat = sig_SB * Tc ** 4                  # erg cm^-2 s^-1
+
+    # Alpha-free viscous(+wind) heating prefactor. In IrradiatedEOS:
+    #   Q_visc = e_rad (9/8) alpha_SS c_s^2 Om_k (1 + psi/3) Sigma [3/8 tau_R + 1/tau_P]
+    # With alpha_SS c_s^2 = Mdot Om_k / (3 pi Sigma (1 + psi)) from (*):
+    #   Q_visc = e_rad (3 / 8pi) Mdot Om_k^2 (1 + psi/3)/(1 + psi) [3/8 tau_R + 1/tau_P]
+    # (= e_rad * 3 G M Mdot / (8 pi R^3) * wind factors). Units: erg cm^-2 s^-1.
+    visc_prefactor = e_rad * (3 / (8 * np.pi)) * Mdot_cgs * Om_k ** 2 \
+        * (1 + psi / 3) / (1 + psi)
+
+    sqrt2pi = np.sqrt(2 * np.pi)
+
+    def balance(Tm):
+        """Net heating (erg cm^-2 s^-1) at midplane temperature Tm (K); root = T."""
+        cs = np.sqrt(GasConst * Tm / mu)         # cm / s, isothermal sound speed
+        H = cs / Om_k                            # cm, scale height
+        kap = kappa(Sigma / (sqrt2pi * H), Tm, amax)   # cm^2 / g, at midplane density
+        tauR = 0.5 * Sigma * kap                 # Rosseland optical depth
+        tauP = tauP_over_tauR * tauR             # Planck optical depth
+
+        dEdt = ext_heat
+        dEdt = dEdt + star_heat * (f_flat + f_flare * (H / AU) / R)   # H/R with both in AU
+        dEdt = dEdt + visc_prefactor * (3. / 8. * tauR + 1. / tauP)
+        dEdt = np.minimum(dEdt, max_heat)        # temperature cap, as in IrradiatedEOS
+        return dEdt - sig_SB * Tm ** 4
+
+    # Same bracket as the first IrradiatedEOS solve: [Tc, Tmax] at every radius.
+    T = brentq(balance, Tc * np.ones_like(R), Tmax * np.ones_like(R))   # K
+
+    # ---- closed-form alpha from (*) at the inner cell ----
+    cs2 = GasConst * T[0] / mu                   # cm^2 / s^2
+    alpha_guess = Mdot_cgs * Om_k[0] / (3 * np.pi * Sigma[0] * cs2)     # dimensionless, TOTAL alpha
+    return float(alpha_guess)
 
 
 # ============================================================================
@@ -676,7 +787,25 @@ def run_model(config, cli_output_dir=None):
     kappa = opacity_tables.get(eos_params["opacity"], Zhu2012)
 
     # ---- 3. solve for the initial disc structure ----
-    disc, eos, Sigma, alpha, alpha_SS, lambda_DW = setup_disc(grid, star, config, kappa)
+    # Initial guess for the alpha-calibration loop (Hof project):
+    #   config['disc']['alpha'] = <number> -> use that number as the starting guess (original behaviour)
+    #   config['disc']['alpha'] = 'SS'     -> compute a steady-state guess from Mdot, Sigma and
+    #                                         the energy balance (steady_state_alpha_guess above)
+    # The 'SS' string is kept in `config` (so the logged config shows 'SS'); only a deep
+    # copy handed to setup_disc gets the numeric guess.
+    alpha_init = disc_params['alpha']
+    if isinstance(alpha_init, str):
+        if alpha_init != 'SS':
+            raise ValueError(f"config['disc']['alpha'] must be a number or 'SS', got {alpha_init!r}")
+        alpha_guess = steady_state_alpha_guess(grid, star, config, kappa)   # dimensionless, total alpha
+        print(f"Steady-state initial alpha guess: {alpha_guess:.4e}")
+        setup_config = copy.deepcopy(config)
+        setup_config['disc']['alpha'] = alpha_guess
+    else:
+        alpha_guess = float(alpha_init)                                     # dimensionless, total alpha
+        setup_config = config
+
+    disc, eos, Sigma, alpha, alpha_SS, lambda_DW = setup_disc(grid, star, setup_config, kappa)
 
     # Sanity check: outside this range the alpha-solve above is not
     # meaningful (either essentially inviscid, or so viscous the disc
@@ -706,6 +835,8 @@ def run_model(config, cli_output_dir=None):
 
     # ---- 8. output file (path already computed in the skip-check above) ----
     h5f, groups = create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS)
+    h5f.attrs["alpha_guess"] = float(alpha_guess)   # starting guess (total alpha) for the calibration loop; numeric or SS-derived
+    h5f.attrs["alpha_guess_mode"] = 'SS' if isinstance(disc_params['alpha'], str) else 'config'
     try:
         _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, diffuse,
                    chemistry, times, config)
