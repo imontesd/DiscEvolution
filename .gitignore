@@ -17,3 +17,4 @@ Figs/
 BACKUP
 *.pkl
 .specstory
+.venv/

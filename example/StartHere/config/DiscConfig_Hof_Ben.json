@@ -23,7 +23,7 @@
     },
 
     "disc": {
-        "alpha": 23e-6,
+        "alpha": 1e-4,
         "M": 0.1,
         "d2g": 0.01,
         "d2g_SI": 0.02,
@@ -32,7 +32,12 @@
         "Rd": 50,
         "gamma": 1
     },
-
+    "calibration":{
+        "solve_for": "psi_DW",
+        "bracket": "(1e-3, 1e3)",
+        "rtol": 1e-4,
+        "n_scan": 30
+    },
     "eos": {
         "type": "IrradiatedEOS",
         "opacity": "Zhu2012",
@@ -99,7 +104,7 @@
 
     "winds": {
         "on": true,
-        "psi_DW": 10,
+        "psi_DW": 15,
         "e_rad": 0.9
     }
 }

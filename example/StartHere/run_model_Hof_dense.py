@@ -129,6 +129,18 @@ a numeric alpha); no alpha_guess / alpha_guess_mode attrs; and this file's
 alpha_SS out-of-range abort (1e-5 < alpha_SS < 0.1) is kept and applies to the
 calibrated alpha_SS too. Without a "calibration" section, behaviour is unchanged.
 
+-(2026-09-28) Ported from run_model_Hof.py (same code): option to hold the VISCOUS
+alpha_SS fixed (instead of the TOTAL alpha) when solving for psi_DW. New optional
+calibration keys, only valid with solve_for = "psi_DW":
+    "calibration": {"solve_for": "psi_DW", "hold": "alpha_SS", "alpha_SS": 1e-4}
+  hold     : "alpha" (default, previous behaviour: total alpha = disc.alpha fixed)
+             or "alpha_SS" (alpha_SS fixed; total alpha = alpha_SS (1 + psi) at each trial psi)
+  alpha_SS : fixed viscous alpha, dimensionless; default disc.alpha / (1 + winds.psi_DW).
+Why: at fixed total alpha Mdot(R_c[0]) depends on psi only through the (bounded, <= x3)
+heating, so psi is ill-conditioned; at fixed alpha_SS, Mdot ~ (1 + psi). Derivation in
+the comment block above _SOLVABLE_PARAMS. New info entries 'hold', 'alpha_SS_fixed';
+new HDF5 attrs calib_hold (str), calib_alpha_SS_fixed (dimensionless, NaN if hold = 'alpha').
+
 
 WHAT THIS RUNS
 --------------
@@ -448,6 +460,35 @@ def steady_state_alpha_guess(grid, star, config, kappa):
 #     "calibration": {"solve_for": "psi_DW", "bracket": [0.01, 100]}
 # With no "calibration" section, run_model() behaves exactly as before
 # (disc_setup.setup_disc damped loop).
+#
+# ---- (Hof, 2026-09-28) Solving for psi_DW: hold alpha_SS fixed, not total alpha ----
+# (Same block as in run_model_Hof.py.) Relevant equations, as implemented in the code:
+#   viscosity  (EOS gets alpha_SS)     nu    = alpha_SS c_s^2 / Omega        (c_s^2 ∝ T)
+#   HybridWindModel.viscous_velocity   v_r   = -3/(Sigma sqrt(R)) d/dR(nu Sigma sqrt(R))   [viscous]
+#                                              - (3/2) psi nu / R                             [wind]
+#   accretion rate                     Mdot  = -2 pi R Sigma v_r ≈ 3 pi Sigma nu (k + psi),  k = O(1)
+#                                            ≈ 3 pi Sigma (c_s^2/Omega) alpha_SS (1 + psi)
+#   IrradiatedEOS heating              Q     = e_rad (9/8) alpha_SS c_s^2 Omega Sigma (1 + psi/3)
+#
+# (a) TOTAL alpha fixed (hold = "alpha", default): alpha_SS (1 + psi) = alpha_tot, so
+#       Mdot ≈ 3 pi Sigma (c_s^2/Omega) alpha_tot    -- psi drops out of the prefactor.
+#     psi only enters through T, via the heating factor
+#       alpha_SS (1 + psi/3) = alpha_tot (1 + psi/3)/(1 + psi),
+#     which goes from alpha_tot (psi -> 0) to alpha_tot/3 (psi -> inf): at most a
+#     factor 3 in heating, and T ∝ Q^s with s <~ 1/3 (s = 0 where irradiation or the
+#     Tmax cap dominate). So Mdot(psi) is BOUNDED (Ben config: only x2.1 over
+#     psi = 1e-3..1e3) and d ln Mdot / d ln psi ~ 0.05. Error propagation:
+#       delta ln psi = delta ln(Mdot/alpha_tot) / (d ln Mdot / d ln psi) ~ 20 x delta ln alpha
+#     -> psi is ill-conditioned: only a narrow window of alpha has a root at all, and
+#        the root moves a lot for small changes in alpha.
+# (b) alpha_SS fixed (hold = "alpha_SS"):
+#       Mdot ≈ 3 pi Sigma (c_s^2/Omega) alpha_SS (1 + psi)   -- psi multiplies Mdot directly,
+#     and the heating also grows with psi (same sign), so
+#       d ln Mdot / d ln psi ≈ psi/(1 + psi) + (small, positive)  -> ~1 for psi >~ 1:
+#     monotonic, unbounded (Ben config: x480 over the same range), well-conditioned.
+#     Caveat: for psi << 1 the slope -> 0 here too; Mdot cannot constrain very weak winds.
+# (b) is also the physical picture: fixed turbulence plus a wind of strength psi,
+#     alpha_DW = psi alpha_SS.
 
 # Registry of parameters the solver can solve for.
 #   solve_for name -> (config section, config key, search scale, default search range)
@@ -545,10 +586,20 @@ def solve_initial_disc(grid, star, config, kappa):
                                    (default: the range in _SOLVABLE_PARAMS)
     rtol      : float, opt.     -- max allowed |Mdot/Mdot_target - 1| (default 1e-6)
     n_scan    : int, opt.       -- number of points in the coarse scan (default 31)
+    hold      : str, opt.       -- (Hof, only with solve_for = 'psi_DW') which alpha stays
+                                   fixed while psi varies: 'alpha' (default; TOTAL alpha =
+                                   disc.alpha fixed) or 'alpha_SS' (viscous alpha fixed,
+                                   total alpha = alpha_SS (1 + psi) at each trial psi).
+                                   See the equations above _SOLVABLE_PARAMS for why
+                                   'alpha_SS' is much better conditioned.
+    alpha_SS  : float, opt.     -- (Hof, only with hold = 'alpha_SS') the fixed viscous
+                                   alpha, dimensionless. Default: disc.alpha / (1 + psi_DW)
+                                   from the config.
 
     The config value of the solved parameter is used ONLY as the initial
     guess (to pick a root if there are several). For 'alpha' it may be 'SS'
-    (steady_state_alpha_guess). Every other parameter must be numeric.
+    (steady_state_alpha_guess). Every other parameter must be numeric (except
+    disc.alpha with hold = 'alpha_SS', which is not used as a fixed value then).
 
     Method
     ------
@@ -602,11 +653,54 @@ def solve_initial_disc(grid, star, config, kappa):
     if name == 'alpha' and guess == 'SS':
         guess = steady_state_alpha_guess(grid, star, config, kappa)   # total alpha, dimensionless
         guess_mode = 'SS'
+    # ---- (Hof) which alpha is held fixed while solving for psi_DW ----
+    #   hold = 'alpha'    : total alpha p['alpha'] fixed (default, previous behaviour)
+    #   hold = 'alpha_SS' : viscous alpha fixed at alpha_SS_fixed (dimensionless); the total
+    #                       alpha passed to evaluate_initial_disc is alpha_SS_fixed (1 + psi)
+    hold = calib.get('hold', 'alpha')
+    if hold not in ('alpha', 'alpha_SS'):
+        raise ValueError(f"calibration.hold must be 'alpha' or 'alpha_SS', got {hold!r}")
+    if name != 'psi_DW' and (hold != 'alpha' or 'alpha_SS' in calib):
+        raise ValueError(f"calibration.hold = 'alpha_SS' / calibration.alpha_SS are only valid with "
+                         f"solve_for = 'psi_DW' (got solve_for = {name!r}).")
+    if hold == 'alpha' and 'alpha_SS' in calib:
+        raise ValueError("calibration.alpha_SS given but calibration.hold is not 'alpha_SS'; "
+                         "set \"hold\": \"alpha_SS\" to hold the viscous alpha fixed.")
+    hold_SS = (hold == 'alpha_SS')
+    alpha_SS_fixed = np.nan                                      # dimensionless; NaN = not used
+    if hold_SS:
+        if calib.get('alpha_SS') is not None:
+            alpha_SS_fixed = float(calib['alpha_SS'])            # dimensionless, given explicitly
+            alpha_SS_src = 'calibration.alpha_SS'
+        else:
+            # default: the turbulence the config implies, alpha_SS = alpha_tot / (1 + psi_cfg)
+            alpha_tot_cfg = p['alpha']                           # total alpha, dimensionless
+            if alpha_tot_cfg == 'SS':
+                alpha_tot_cfg = steady_state_alpha_guess(grid, star, config, kappa)
+            alpha_SS_fixed = float(alpha_tot_cfg) / (1 + float(p['psi_DW']))
+            alpha_SS_src = f"disc.alpha / (1 + psi_DW) = {float(alpha_tot_cfg):.4g} / (1 + {float(p['psi_DW']):.4g})"
+        if not alpha_SS_fixed > 0:
+            raise ValueError(f"calibration: fixed alpha_SS must be > 0, got {alpha_SS_fixed}")
+        print(f"Calibration: holding alpha_SS = {alpha_SS_fixed:.4e} fixed (from {alpha_SS_src}); "
+              f"total alpha = alpha_SS (1 + psi) varies with psi.")
+
     for k, v in p.items():
+        if hold_SS and k == 'alpha':
+            continue          # (Hof) total alpha is derived from alpha_SS_fixed, not used as a fixed input
         if k != name and isinstance(v, str):
             raise ValueError(f"Fixed parameter {k!r} must be numeric when solving for {name!r} "
                              f"(got {v!r}); 'SS' is only allowed for alpha when solve_for = 'alpha'.")
     guess = float(guess)
+
+    def params_at(v):
+        """(Hof) Full parameter set with the free parameter = v (its own units). With
+        hold = 'alpha_SS' the total alpha is recomputed as alpha_SS_fixed (1 + psi), so
+        evaluate_initial_disc's alpha_SS = alpha / (1 + psi) equals alpha_SS_fixed exactly."""
+        q = dict(p)
+        q[name] = float(v)
+        if hold_SS:
+            q['alpha'] = alpha_SS_fixed * (1 + float(v))          # total alpha, dimensionless
+        return q
 
     # ---- map parameter value <-> search variable x ----
     if scale == 'log':
@@ -620,8 +714,7 @@ def solve_initial_disc(grid, star, config, kappa):
 
     def g(x):
         """log10(Mdot / Mdot_target) with the free parameter set to from_x(x); nan if Mdot <= 0."""
-        q = dict(p)
-        q[name] = float(from_x(x))
+        q = params_at(from_x(x))      # (Hof) was dict(p) + q[name] = ...; now also handles hold = 'alpha_SS'
         n_evals[0] += 1
         Mdot = evaluate_initial_disc(grid, star, q, config['eos'], kappa)['Mdot']   # Msun / yr
         if not np.isfinite(Mdot) or Mdot <= 0:
@@ -705,8 +798,7 @@ def solve_initial_disc(grid, star, config, kappa):
     value = float(from_x(x_root))                                # parameter's own units
 
     # ---- 4. rebuild the disc at the root and check the residual ----
-    q = dict(p)
-    q[name] = value
+    q = params_at(value)              # (Hof) consistent total alpha at the root when hold = 'alpha_SS'
     res = evaluate_initial_disc(grid, star, q, config['eos'], kappa)
     relerr = abs(res['Mdot'] / Mdot_target - 1)                  # dimensionless
     if relerr > rtol:
@@ -724,6 +816,8 @@ def solve_initial_disc(grid, star, config, kappa):
         'Mdot_relerr': float(relerr),           # dimensionless
         'n_evals': int(n_evals[0] + 1),         # forward-model evaluations (scan + Brent + final rebuild)
         'n_roots': n_roots,                     # number of candidate roots found in the scan (>1: non-monotonic)
+        'hold': hold,                           # (Hof) 'alpha' (total alpha fixed) or 'alpha_SS' (viscous alpha fixed)
+        'alpha_SS_fixed': float(alpha_SS_fixed),  # (Hof) dimensionless; NaN when hold = 'alpha'
     }
     print(f"Calibration: {name} = {value:.6g} (guess {guess:.4g}) -> Mdot = {res['Mdot']:.4e} Msun/yr "
           f"(rel. err {relerr:.1e}, {info['n_evals']} evaluations)")
@@ -1424,6 +1518,9 @@ def run_model(config, cli_output_dir=None):
         h5f.attrs["calib_Mdot_relerr"] = info['Mdot_relerr']     # dimensionless
         h5f.attrs["calib_n_evals"] = info['n_evals']
         h5f.attrs["calib_n_roots"] = info['n_roots']
+        # (Hof) which alpha was held fixed during a psi_DW solve: 'alpha' (total) or 'alpha_SS' (viscous)
+        h5f.attrs["calib_hold"] = info['hold']
+        h5f.attrs["calib_alpha_SS_fixed"] = info['alpha_SS_fixed']   # dimensionless; NaN when calib_hold = 'alpha'
     try:
         _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, diffuse,
                    chemistry, times, config)
