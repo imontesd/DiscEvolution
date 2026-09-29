@@ -91,6 +91,12 @@ with one further addition -- see that file's own docstring.)
      probably unreachable). Hint to use hold = 'alpha_SS' for psi_DW with total alpha fixed.
    * new checks: bracket lo < hi; warning if the initial guess is outside the bracket;
      Brent failures re-raised with the interval named. New helper dict _SOLVABLE_UNITS.
+   * the coarse scan now also records the raw Mdot (Msun/yr, sign included), so the
+     no-root message separates scan points with Mdot <= 0 (net outward flow at R_c[0])
+     from forward-model failures, only calls a root "outside the bracket" when Mdot is
+     closest at an actual bracket END, and tailors the final "Fix:" line to the case.
+   * run_model(): if the config has NO "calibration" section, prints a NOTE saying the
+     root-finder is not used (damped-iteration fallback) and listing the section's keys.
 
 
 WHAT THIS RUNS
@@ -642,12 +648,17 @@ def solve_initial_disc(grid, star, config, kappa):
         to_x, from_x = (lambda v: v), (lambda x: x)
 
     n_evals = [0]   # mutable counter of forward-model evaluations (list so g() can modify it)
+    # (Hof, 2026-09-29) raw Mdot (Msun/yr, may be <= 0) of the most recent g() call. g() must
+    # return nan for Mdot <= 0 (log10 undefined), which alone cannot distinguish "Mdot <= 0:
+    # net OUTWARD flow at R_c[0]" from "forward model failed"; the scan records this too.
+    last_Mdot = [np.nan]
 
     def g(x):
         """log10(Mdot / Mdot_target) with the free parameter set to from_x(x); nan if Mdot <= 0."""
         q = params_at(from_x(x))      # (Hof) was dict(p) + q[name] = ...; now also handles hold = 'alpha_SS'
         n_evals[0] += 1
         Mdot = evaluate_initial_disc(grid, star, q, config['eos'], kappa)['Mdot']   # Msun / yr
+        last_Mdot[0] = Mdot           # (Hof) keep the raw value, sign included
         if not np.isfinite(Mdot) or Mdot <= 0:
             return np.nan
         return np.log10(Mdot / Mdot_target)
@@ -665,11 +676,24 @@ def solve_initial_disc(grid, star, config, kappa):
     # np.errstate silences the numpy overflow/divide warnings the EOS emits at extreme
     # parameter values during the scan (those points just come back nan / far from 0).
     xs = np.linspace(to_x(lo), to_x(hi), n_scan)
+    # (Hof, 2026-09-29) also record the raw Mdot at each scan point (Msun/yr; nan if the
+    # forward model raised), to classify the unusable points in the no-root diagnostic:
+    #   Mdot_scan <= 0      -> net OUTWARD flow at R_c[0] (physical, not a failure)
+    #   Mdot_scan nan/inf   -> forward model failed (e.g. EOS temperature solve)
+    gs, Mdot_scan = [], []
     with np.errstate(all='ignore'):
-        gs = np.array([g_safe(x) for x in xs])
+        for x in xs:
+            last_Mdot[0] = np.nan                                # reset: stays nan if g() raises
+            gs.append(g_safe(x))
+            Mdot_scan.append(last_Mdot[0])
+    gs, Mdot_scan = np.array(gs), np.array(Mdot_scan, dtype=float)
     ok = np.isfinite(gs)
     if not ok.any():
-        raise RuntimeError(f"calibration: Mdot was non-positive/non-finite for every {name} in [{lo:.4g}, {hi:.4g}]")
+        # (Hof, 2026-09-29) say how many points had Mdot <= 0 (outward flow) vs a failed model
+        n_neg = int(np.sum(np.isfinite(Mdot_scan) & (Mdot_scan <= 0)))
+        raise RuntimeError(f"calibration FAILED: no usable Mdot for any {name} in [{lo:.4g}, {hi:.4g}] {unit}: "
+                           f"{n_neg}/{n_scan} scan points have Mdot <= 0 at R_c[0] (net outward flow), "
+                           f"{n_scan - n_neg}/{n_scan} have a failed forward model (exception / non-finite Mdot).")
     # Mdot insensitive to the parameter (g flat to rounding): no meaningful root exists.
     # This happens e.g. for e_rad when the inner cells sit at the Tmax cap (T = Tmax there
     # whatever the heating), since Mdot is measured at the inner cell R_c[0].
@@ -712,13 +736,30 @@ def solve_initial_disc(grid, star, config, kappa):
         #   (c) |g| is smallest at an INTERIOR scan point -> Mdot has a turning point and
         #       comes closest to the target inside the bracket, then turns away again: the
         #       target is probably unreachable for ANY value of this parameter.
-        fi = np.flatnonzero(ok)                                  # indices of usable (finite) scan points
-        Mdot_min = Mdot_target * 10 ** np.nanmin(gs)            # Msun / yr
-        Mdot_max = Mdot_target * 10 ** np.nanmax(gs)            # Msun / yr
+        #   (d) [added after a confusing report] |g| is smallest at the last USABLE point, but
+        #       that is not the bracket end: beyond it Mdot <= 0 or the model failed, so Mdot
+        #       turns over INSIDE the bracket -> same conclusion as (c), not "widen the bracket".
+        fi = np.flatnonzero(ok)                                  # indices of usable (Mdot > 0) scan points
+        Mdot_min = Mdot_target * 10 ** np.nanmin(gs)            # Msun / yr, smallest POSITIVE Mdot
+        Mdot_max = Mdot_target * 10 ** np.nanmax(gs)            # Msun / yr, largest Mdot
+        # (Hof, 2026-09-29) classify the unusable points (see the scan above)
+        i_neg = np.flatnonzero(np.isfinite(Mdot_scan) & (Mdot_scan <= 0))   # Mdot <= 0: outward flow
+        i_fail = np.flatnonzero(~np.isfinite(Mdot_scan))                     # forward model failed
         msg = [f"calibration FAILED: no {name} in the bracket [{lo:.4g}, {hi:.4g}] {unit} gives "
                f"Mdot = {Mdot_target:.3e} Msun/yr with the other parameters fixed.",
-               f"  Reachable Mdot over the bracket: [{Mdot_min:.3e}, {Mdot_max:.3e}] Msun/yr "
-               f"({len(fi)}/{n_scan} scan points usable)."]
+               f"  Positive Mdot reached over the bracket: [{Mdot_min:.3e}, {Mdot_max:.3e}] Msun/yr "
+               f"(at {len(fi)}/{n_scan} scan points)."]
+        if len(i_neg):
+            msg.append(f"  At {len(i_neg)} scan point(s) Mdot at R_c[0] is <= 0 (net OUTWARD flow, not a "
+                       f"solver failure): {name} = " + ", ".join(f"{from_x(xs[i]):.3g}" for i in i_neg) +
+                       f" {unit} (Mdot down to {np.min(Mdot_scan[i_neg]):.3e} Msun/yr). This happens when "
+                       f"nu*Sigma rises outward at the inner edge (viscous factor k = 1 - 2p < 0, see the "
+                       f"comment above _SOLVABLE_PARAMS), e.g. a steep inner temperature drop near the "
+                       f"Tmax = {config['eos'].get('Tmax')} K cap / dust sublimation, and the wind term "
+                       f"(psi_DW = {float(params_at(guess)['psi_DW']):.3g}) is too weak to compensate.")
+        if len(i_fail):
+            msg.append(f"  At {len(i_fail)} scan point(s) the forward model FAILED (exception / non-finite "
+                       f"Mdot): {name} = " + ", ".join(f"{from_x(xs[i]):.3g}" for i in i_fail) + f" {unit}.")
 
         # (a) sign change between two usable scan points separated by failed (nan) points
         gaps = [(fi[m], fi[m + 1]) for m in range(len(fi) - 1)
@@ -726,16 +767,19 @@ def solve_initial_disc(grid, star, config, kappa):
         if gaps:
             a, b = gaps[0]
             msg.append(f"  Mdot crosses the target between {name} = {from_x(xs[a]):.4g} and "
-                       f"{from_x(xs[b]):.4g} {unit}, but the forward model FAILED (EOS did not converge "
-                       f"/ non-finite Mdot) at the {b - a - 1} scan point(s) in between. The root is "
-                       f"probably in that region; try a narrower bracket there or a larger n_scan.")
+                       f"{from_x(xs[b]):.4g} {unit}, but the {b - a - 1} scan point(s) in between are "
+                       f"unusable (Mdot <= 0 or model failed, see above). The root is probably in that "
+                       f"region; try a narrower bracket there or a larger n_scan.")
+            fix = "narrow calibration.bracket around that region or increase n_scan."
         else:
             # g = log10(Mdot/Mdot_target) > 0 everywhere means every Mdot EXCEEDS the target,
             # i.e. the target lies BELOW the reachable range (and vice versa)
             side = 'BELOW' if np.nanmin(gs) > 0 else 'ABOVE'
-            msg.append(f"  The target Mdot is {side} every Mdot reachable in the bracket.")
+            msg.append(f"  The target Mdot is {side} every positive Mdot reached in the bracket.")
             i_best = fi[np.argmin(np.abs(gs[fi]))]              # scan point with Mdot closest to target
-            if i_best in (fi[0], fi[-1]) and len(fi) >= 2:
+            # (Hof) (b) needs the closest point to be an actual END of the bracket (scan index
+            # 0 or n_scan - 1); being merely the last USABLE point is case (d) below
+            if i_best in (0, n_scan - 1) and len(fi) >= 2:
                 # (b) closest at a bracket end: extrapolate outwards from that end
                 at_lo = (i_best == fi[0])
                 i_nb = fi[1] if at_lo else fi[-2]                # usable neighbour, one step inwards
@@ -777,18 +821,35 @@ def solve_initial_disc(grid, star, config, kappa):
                         new_lo = max(from_x(min(x_est - pad, to_x(lo))), lo_lim)
                         new_hi = min(from_x(max(x_est + pad, to_x(hi))), hi_lim)
                         msg.append(f"  Suggested: \"bracket\": [{new_lo:.4g}, {new_hi:.4g}]   {unit}")
+                # (Hof) only point to a suggested bracket if one was actually printed
+                fix = ("widen calibration.bracket as suggested, or change another parameter / the target Mdot."
+                       if msg[-1].startswith("  Suggested:")
+                       else "change another (fixed) parameter or the target Mdot.")
+            elif i_best in (fi[0], fi[-1]):
+                # (d) closest at the last usable point, but the bracket continues beyond it with
+                # Mdot <= 0 / failed points: Mdot turns over inside the bracket
+                msg.append(f"  Mdot is closest to the target at {name} = {from_x(xs[i_best]):.4g} "
+                           f"{unit} (Mdot = {Mdot_target * 10 ** gs[i_best]:.3e} Msun/yr); beyond it, towards "
+                           f"the {'lower' if i_best == fi[0] else 'upper'} bracket end, Mdot is <= 0 or the "
+                           f"model failed. Mdot turns over INSIDE the bracket, so widening it will not help: "
+                           f"the target is probably unreachable for any {name} with the other parameters fixed.")
+                fix = "change another (fixed) parameter or the target Mdot."
             else:
                 # (c) closest approach at an interior point: Mdot turns around inside the bracket
                 msg.append(f"  Mdot comes closest to the target INSIDE the bracket ({name} = "
                            f"{from_x(xs[i_best]):.4g} {unit}, Mdot = {Mdot_target * 10 ** gs[i_best]:.3e} "
-                           f"Msun/yr) and then moves away again: the target is probably unreachable for "
-                           f"any {name}. Change another parameter (or the target Mdot).")
+                           f"Msun/yr) and moves away from it on both sides: Mdot turns over, so widening the "
+                           f"bracket will not help; the target is probably unreachable for any {name} "
+                           f"with the other parameters fixed.")
+                fix = "change another (fixed) parameter or the target Mdot."
         # the fixed-total-alpha psi solve is known to be badly constrained (see equations above
         # _SOLVABLE_PARAMS): Mdot varies by only ~x2 over psi = 1e-3..1e3
         if name == 'psi_DW' and not hold_SS:
             msg.append("  HINT: with total alpha fixed (hold = 'alpha'), Mdot depends only weakly and "
                        "boundedly on psi_DW; consider \"hold\": \"alpha_SS\" in the calibration section.")
-        msg.append("  Fix: widen calibration.bracket, or change another parameter / the target Mdot.")
+        # (Hof) the suggested fix now depends on the case above, instead of always
+        # "widen the bracket" (which contradicted cases (c)/(d))
+        msg.append(f"  Fix: {fix}")
         raise RuntimeError("\n".join(msg))
 
     # ---- 2. choose the candidate root closest to the guess ----
@@ -1383,6 +1444,31 @@ def run_model(config, cli_output_dir=None):
         grid, star, kappa = _build_grid_star_kappa(config)
         calib = solve_initial_disc(grid, star, config, kappa)
         config = calib['run_config']
+    else:
+        # (Hof, 2026-09-29) No "calibration" section: not an error (the old damped-loop
+        # path in disc_setup.setup_disc still runs), but tell the user, and show what the
+        # section should contain in case they meant to use the root-finder. The key list
+        # mirrors solve_initial_disc()'s docstring -- keep the two in sync.
+        print("NOTE: no \"calibration\" section in the config -> the generic root-finder "
+              "(solve_initial_disc) is NOT used;\n"
+              "      the initial disc is set up by disc_setup.setup_disc's damped alpha iteration "
+              "(HDF5 attr alpha_solver = 'damped_iteration').\n"
+              "      To use the root-finder, add e.g.\n"
+              "        \"calibration\": {\"solve_for\": \"psi_DW\", \"bracket\": [1e-3, 1e3], "
+              "\"rtol\": 1e-6, \"n_scan\": 31,\n"
+              "                        \"hold\": \"alpha_SS\", \"alpha_SS\": 1e-4}\n"
+              "      Keys:\n"
+              "        solve_for (required) : one of " + ", ".join(repr(k) for k in _SOLVABLE_PARAMS) + "\n"
+              "                               the parameter root-found so the inner Mdot equals disc.Mdot "
+              "(Msun/yr); its config value is only the initial guess\n"
+              "        bracket   (optional) : [lo, hi] search range in the parameter's own units, as a JSON "
+              "LIST (not a string); default from _SOLVABLE_PARAMS\n"
+              "        rtol      (optional) : max |Mdot/Mdot_target - 1| accepted, dimensionless (default 1e-6)\n"
+              "        n_scan    (optional) : number of coarse-scan points across the bracket (default 31)\n"
+              "        hold      (optional) : only with solve_for = 'psi_DW'; 'alpha' (default, TOTAL alpha "
+              "fixed) or 'alpha_SS' (viscous alpha fixed, recommended)\n"
+              "        alpha_SS  (optional) : only with hold = 'alpha_SS'; fixed viscous alpha, dimensionless "
+              "(default disc.alpha / (1 + winds.psi_DW))")
 
     grid_params = config['grid']
     sim_params = config['simulation']
