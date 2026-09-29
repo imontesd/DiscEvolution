@@ -2,7 +2,7 @@
   "grid": {
     "rmin": 0.1,
     "rmax": 1000,
-    "nr": 2000,
+    "nr": 1000,
     "spacing": "natural",
     "smart_binning": false,
     "type": "winds-alpha"
@@ -13,7 +13,7 @@
     "T_eff": 4000
   },
   "simulation": {
-    "run_name": "hof_discwind_sweep3.02_nr2000",
+    "run_name": "hof_discwind_sweep1.22_boundary_Zero",
     "t_initial": 0,
     "t_final": 3000000.0,
     "t_interval": [
@@ -128,7 +128,7 @@
   },
   "winds": {
     "on": true,
-    "psi_DW": 0.0,
-    "e_rad": 1.0
+    "psi_DW": 0.01,
+    "e_rad": 0.9
   }
 }

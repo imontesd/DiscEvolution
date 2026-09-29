@@ -76,6 +76,22 @@ with one further addition -- see that file's own docstring.)
  New info / calibration_result entries 'hold', 'alpha_SS_fixed'; new HDF5 attrs
  calib_hold (str) and calib_alpha_SS_fixed (dimensionless, NaN when hold = 'alpha').
 
+-(2026-09-29) More informative solver messages in solve_initial_disc() (print/raise
+ only; the solved value and the physics are unchanged):
+   * success: multi-line "Calibration CONVERGED" summary (value with units, bracket,
+     achieved vs target Mdot and rtol, root interval, Brent iterations, evaluations,
+     candidate roots, total alpha / alpha_SS, local sensitivity d log Mdot / d log x),
+     with warnings if the sensitivity is < 0.1 (ill-conditioned) or the root is in the
+     outermost scan interval.
+   * no root in bracket: says whether the target is above/below the reachable Mdot,
+     whether the crossing is hidden behind failed (nan) scan points, whether Mdot is
+     closest to the target at a bracket END (-> root most likely OUTSIDE the bracket;
+     prints a log-linear extrapolated estimate, flags it if outside the physical range
+     in _SOLVABLE_PARAMS, and suggests a new bracket) or at an interior point (target
+     probably unreachable). Hint to use hold = 'alpha_SS' for psi_DW with total alpha fixed.
+   * new checks: bracket lo < hi; warning if the initial guess is outside the bracket;
+     Brent failures re-raised with the interval named. New helper dict _SOLVABLE_UNITS.
+
 
 WHAT THIS RUNS
 --------------
@@ -395,6 +411,17 @@ _SOLVABLE_PARAMS = {
     "e_rad":  ("winds", "e_rad",  "linear", (0.0, 0.999)),    # fraction of accretion heating radiated, dimensionless (must stay < 1)
 }
 
+# (Hof, 2026-09-29) Unit labels for the solvable parameters, used only in the
+# solver's printed success / failure messages so every printed value carries its unit.
+_SOLVABLE_UNITS = {
+    "alpha":  "(dimensionless, total alpha)",
+    "M":      "Msun",
+    "Rd":     "AU",
+    "gamma":  "(dimensionless)",
+    "psi_DW": "(dimensionless, alpha_DW/alpha_SS)",
+    "e_rad":  "(dimensionless)",
+}
+
 
 def evaluate_initial_disc(grid, star, p, eos_params, kappa):
     """
@@ -520,8 +547,17 @@ def solve_initial_disc(grid, star, config, kappa):
     section, key, scale, (lo, hi) = _SOLVABLE_PARAMS[name]
     if name == "Rd" and hi is None:
         hi = float(grid.Rc[-1])                                  # AU, outermost cell centre
+    # (Hof, 2026-09-29) keep the registry's default range: it also encodes the physical
+    # limits (gamma < 2, e_rad < 1, alpha <= 1, ...) and is used in the no-root diagnostic
+    # to say whether an extrapolated root would even be physical.
+    lo_def, hi_def = lo, hi                                      # parameter's own units
+    unit = _SOLVABLE_UNITS.get(name, "")                         # (Hof) label for printed messages
     if calib.get('bracket') is not None:
         lo, hi = (float(v) for v in calib['bracket'])            # parameter's own units
+    # (Hof, 2026-09-29) explicit check: a reversed/degenerate bracket would otherwise give a
+    # confusing scan (xs decreasing) or a single repeated point.
+    if not lo < hi:
+        raise ValueError(f"calibration FAILED: bracket must satisfy lo < hi, got [{lo}, {hi}] {unit}")
     rtol = float(calib.get('rtol', 1e-6))                        # dimensionless, on Mdot
     n_scan = int(calib.get('n_scan', 31))
     Mdot_target = config['disc']['Mdot']                         # Msun / yr
@@ -580,6 +616,12 @@ def solve_initial_disc(grid, star, config, kappa):
             raise ValueError(f"Fixed parameter {k!r} must be numeric when solving for {name!r} "
                              f"(got {v!r}); 'SS' is only allowed for alpha when solve_for = 'alpha'.")
     guess = float(guess)
+    # (Hof, 2026-09-29) The guess only chooses among roots found INSIDE the bracket. If it
+    # lies outside, the solver cannot return a value near it -- tell the user up front.
+    if not lo <= guess <= hi:
+        print(f"WARNING calibration: initial guess {name} = {guess:.4g} {unit} is OUTSIDE the "
+              f"bracket [{lo:.4g}, {hi:.4g}] {unit}. Only roots inside the bracket can be found; "
+              f"widen calibration.bracket if you expect the solution near the guess.")
 
     def params_at(v):
         """(Hof) Full parameter set with the free parameter = v (its own units). With
@@ -657,13 +699,97 @@ def solve_initial_disc(grid, star, config, kappa):
         )
     idx = [i for i in range(n_scan - 1) if ok[i] and ok[i + 1] and gs[i] * gs[i + 1] < 0]
     if not idx and not exact:
+        # ---- (Hof, 2026-09-29) diagnose WHY there is no root inside [lo, hi] ----
+        # Three distinct situations, each with its own message:
+        #   (a) the sign change is hidden behind scan points where the forward model failed
+        #       (g = nan, e.g. the EOS temperature solve did not converge) -> a root probably
+        #       exists INSIDE the bracket, in the failed region;
+        #   (b) |g| is smallest at one END of the bracket -> Mdot is still heading towards the
+        #       target there, so the root most likely lies OUTSIDE the bracket on that side.
+        #       Estimate it by linear extrapolation of g(x) from the two outermost usable scan
+        #       points (x = log10(value) for 'log' parameters, so this is a power-law
+        #       extrapolation of Mdot in the parameter);
+        #   (c) |g| is smallest at an INTERIOR scan point -> Mdot has a turning point and
+        #       comes closest to the target inside the bracket, then turns away again: the
+        #       target is probably unreachable for ANY value of this parameter.
+        fi = np.flatnonzero(ok)                                  # indices of usable (finite) scan points
         Mdot_min = Mdot_target * 10 ** np.nanmin(gs)            # Msun / yr
         Mdot_max = Mdot_target * 10 ** np.nanmax(gs)            # Msun / yr
-        raise RuntimeError(
-            f"calibration: no {name} in [{lo:.4g}, {hi:.4g}] gives Mdot = {Mdot_target:.3e} Msun/yr "
-            f"with the other parameters fixed. Reachable range: [{Mdot_min:.3e}, {Mdot_max:.3e}] Msun/yr. "
-            f"Widen calibration.bracket, or change another parameter."
-        )
+        msg = [f"calibration FAILED: no {name} in the bracket [{lo:.4g}, {hi:.4g}] {unit} gives "
+               f"Mdot = {Mdot_target:.3e} Msun/yr with the other parameters fixed.",
+               f"  Reachable Mdot over the bracket: [{Mdot_min:.3e}, {Mdot_max:.3e}] Msun/yr "
+               f"({len(fi)}/{n_scan} scan points usable)."]
+
+        # (a) sign change between two usable scan points separated by failed (nan) points
+        gaps = [(fi[m], fi[m + 1]) for m in range(len(fi) - 1)
+                if fi[m + 1] > fi[m] + 1 and gs[fi[m]] * gs[fi[m + 1]] < 0]
+        if gaps:
+            a, b = gaps[0]
+            msg.append(f"  Mdot crosses the target between {name} = {from_x(xs[a]):.4g} and "
+                       f"{from_x(xs[b]):.4g} {unit}, but the forward model FAILED (EOS did not converge "
+                       f"/ non-finite Mdot) at the {b - a - 1} scan point(s) in between. The root is "
+                       f"probably in that region; try a narrower bracket there or a larger n_scan.")
+        else:
+            # g = log10(Mdot/Mdot_target) > 0 everywhere means every Mdot EXCEEDS the target,
+            # i.e. the target lies BELOW the reachable range (and vice versa)
+            side = 'BELOW' if np.nanmin(gs) > 0 else 'ABOVE'
+            msg.append(f"  The target Mdot is {side} every Mdot reachable in the bracket.")
+            i_best = fi[np.argmin(np.abs(gs[fi]))]              # scan point with Mdot closest to target
+            if i_best in (fi[0], fi[-1]) and len(fi) >= 2:
+                # (b) closest at a bracket end: extrapolate outwards from that end
+                at_lo = (i_best == fi[0])
+                i_nb = fi[1] if at_lo else fi[-2]                # usable neighbour, one step inwards
+                slope = (gs[i_nb] - gs[i_best]) / (xs[i_nb] - xs[i_best])   # dex of Mdot per unit x
+                edge = 'LOWER' if at_lo else 'UPPER'
+                slope_lbl = (f"d log10(Mdot) / d log10({name})" if scale == 'log'
+                             else f"d log10(Mdot) / d {name}")
+                msg.append(f"  Mdot is closest to the target at the {edge} end of the bracket "
+                           f"({name} = {from_x(xs[i_best]):.4g} {unit}, Mdot = "
+                           f"{Mdot_target * 10 ** gs[i_best]:.3e} Msun/yr), so the solution most likely lies "
+                           f"OUTSIDE the bracket, {'below' if at_lo else 'above'} {from_x(xs[i_best]):.4g}. "
+                           f"Local sensitivity {slope_lbl} = {slope:.3g}.")
+                x_est = xs[i_best] - gs[i_best] / slope if slope != 0 else np.inf   # linear extrapolation of g to 0
+                with np.errstate(over='ignore'):
+                    v_est = from_x(x_est)                        # parameter's own units (inf if it overflows)
+                if not np.isfinite(v_est):
+                    msg.append(f"  Mdot is (numerically) flat in {name} at that end: no finite extrapolated "
+                               f"root, the target is probably unreachable for ANY {name}.")
+                else:
+                    width = abs(xs[-1] - xs[0])                  # bracket width in x
+                    msg.append(f"  Extrapolated root: {name} ~ {v_est:.4g} {unit} "
+                               f"({'log-' if scale == 'log' else ''}linear extrapolation; rough estimate only).")
+                    # Mdot flattening out: weak power-law sensitivity (< 0.1, cf. psi_DW with total
+                    # alpha fixed) or the estimate is > 3 bracket widths away -> likely saturation
+                    if (scale == 'log' and abs(slope) < 0.1) or abs(x_est - xs[i_best]) > 3 * width:
+                        msg.append(f"  WARNING: Mdot is only weakly sensitive to {name} here and may "
+                                   f"saturate, so the extrapolation is unreliable and the target may be "
+                                   f"unreachable for ANY {name}.")
+                    # compare to the registry range, which also encodes physical limits
+                    lo_lim = lo_def
+                    hi_lim = hi_def if hi_def is not None else float(grid.Rc[-1])
+                    if not lo_lim <= v_est <= hi_lim:
+                        msg.append(f"  NOTE: the estimate is outside the default/physical range "
+                                   f"[{lo_lim:.4g}, {hi_lim:.4g}] {unit} for {name} (see _SOLVABLE_PARAMS); "
+                                   f"change another parameter rather than widening the bracket.")
+                    else:
+                        # suggest a bracket that includes the estimate with some margin
+                        pad = 0.5 if scale == 'log' else 0.1 * width   # 0.5 dex, or 10% of the bracket
+                        new_lo = max(from_x(min(x_est - pad, to_x(lo))), lo_lim)
+                        new_hi = min(from_x(max(x_est + pad, to_x(hi))), hi_lim)
+                        msg.append(f"  Suggested: \"bracket\": [{new_lo:.4g}, {new_hi:.4g}]   {unit}")
+            else:
+                # (c) closest approach at an interior point: Mdot turns around inside the bracket
+                msg.append(f"  Mdot comes closest to the target INSIDE the bracket ({name} = "
+                           f"{from_x(xs[i_best]):.4g} {unit}, Mdot = {Mdot_target * 10 ** gs[i_best]:.3e} "
+                           f"Msun/yr) and then moves away again: the target is probably unreachable for "
+                           f"any {name}. Change another parameter (or the target Mdot).")
+        # the fixed-total-alpha psi solve is known to be badly constrained (see equations above
+        # _SOLVABLE_PARAMS): Mdot varies by only ~x2 over psi = 1e-3..1e3
+        if name == 'psi_DW' and not hold_SS:
+            msg.append("  HINT: with total alpha fixed (hold = 'alpha'), Mdot depends only weakly and "
+                       "boundedly on psi_DW; consider \"hold\": \"alpha_SS\" in the calibration section.")
+        msg.append("  Fix: widen calibration.bracket, or change another parameter / the target Mdot.")
+        raise RuntimeError("\n".join(msg))
 
     # ---- 2. choose the candidate root closest to the guess ----
     # Each candidate: (approximate x location, 'exact' scan point index or 'interval' index)
@@ -679,11 +805,24 @@ def solve_initial_disc(grid, star, config, kappa):
               f"[{approx}]. Using the one closest to the guess {guess:.4g}.")
 
     # ---- 3. Brent's method inside that interval (x tolerance is in log10 or linear units) ----
+    n_brent = 0                                                  # (Hof) Brent iterations (0 = exact scan hit)
     if kind == 'exact':
         x_root = xs[j]                                           # scan landed exactly on the root
     else:
-        with np.errstate(all='ignore'):
-            x_root = scipy_brentq(g, xs[j], xs[j + 1], xtol=1e-12, maxiter=200)
+        # (Hof, 2026-09-29) full_output=True returns a RootResults object (iteration count);
+        # a failure inside Brent (no convergence in maxiter, or the forward model raising at a
+        # trial point) is re-raised with the interval and the parameter named.
+        try:
+            with np.errstate(all='ignore'):
+                x_root, brent_res = scipy_brentq(g, xs[j], xs[j + 1], xtol=1e-12, maxiter=200,
+                                                 full_output=True)
+        except (RuntimeError, ValueError, FloatingPointError, ZeroDivisionError) as err:
+            raise RuntimeError(
+                f"calibration FAILED: Brent's method did not converge for {name} inside "
+                f"[{from_x(xs[j]):.4g}, {from_x(xs[j + 1]):.4g}] {unit} (the scan found a sign change "
+                f"there). Underlying error: {err}"
+            ) from err
+        n_brent = int(brent_res.iterations)
     value = float(from_x(x_root))                                # parameter's own units
 
     # ---- 4. rebuild the disc at the root and check the residual ----
@@ -691,7 +830,7 @@ def solve_initial_disc(grid, star, config, kappa):
     res = evaluate_initial_disc(grid, star, q, config['eos'], kappa)
     relerr = abs(res['Mdot'] / Mdot_target - 1)                  # dimensionless
     if relerr > rtol:
-        raise RuntimeError(f"calibration: Brent converged to {name} = {value:.6g} but "
+        raise RuntimeError(f"calibration FAILED: Brent converged to {name} = {value:.6g} {unit} but "
                            f"|Mdot/Mdot_target - 1| = {relerr:.2e} > rtol = {rtol:.1e} "
                            f"(Mdot may be discontinuous in {name} here).")
 
@@ -708,8 +847,37 @@ def solve_initial_disc(grid, star, config, kappa):
         'hold': hold,                           # (Hof) 'alpha' (total alpha fixed) or 'alpha_SS' (viscous alpha fixed)
         'alpha_SS_fixed': float(alpha_SS_fixed),  # (Hof) dimensionless; NaN when hold = 'alpha'
     }
-    print(f"Calibration: {name} = {value:.6g} (guess {guess:.4g}) -> Mdot = {res['Mdot']:.4e} Msun/yr "
-          f"(rel. err {relerr:.1e}, {info['n_evals']} evaluations)")
+    # ---- (Hof, 2026-09-29) success summary ----
+    # Local sensitivity of Mdot to the parameter at the root, from the two scan points that
+    # bracket it: d log10(Mdot) / d x (x = log10(value) for 'log' parameters). Small values
+    # mean the parameter is poorly constrained by Mdot (e.g. psi_DW with total alpha fixed,
+    # ~0.05): a small error in Mdot or in the other parameters moves the root a lot.
+    if kind == 'interval':
+        a, b = xs[j], xs[j + 1]                                  # scan interval containing the root, in x
+        sens = (gs[j + 1] - gs[j]) / (b - a)                     # dex of Mdot per unit x
+    else:
+        a = b = xs[j]
+        sens = np.nan                                            # not computed for an exact scan hit
+    sens_lbl = f"d log10(Mdot)/d log10({name})" if scale == 'log' else f"d log10(Mdot)/d {name}"
+    print(f"Calibration CONVERGED: {name} = {value:.6g} {unit}  (guess {guess:.4g}, "
+          f"bracket [{lo:.4g}, {hi:.4g}])")
+    print(f"    Mdot = {res['Mdot']:.4e} Msun/yr vs target {Mdot_target:.4e} Msun/yr "
+          f"(|rel. err| {relerr:.1e} <= rtol {rtol:.1e})")
+    print(f"    root interval [{from_x(a):.4g}, {from_x(b):.4g}] {unit}; "
+          f"{'exact scan hit' if kind == 'exact' else f'{n_brent} Brent iterations'}; "
+          f"{info['n_evals']} forward-model evaluations; {n_roots} candidate root(s) in bracket")
+    print(f"    total alpha = {float(q['alpha']):.4e}, alpha_SS = {res['alpha_SS']:.4e} "
+          f"(hold = {hold!r}); local sensitivity {sens_lbl} = {sens:.3g}")
+    # warn if Mdot barely responds to the parameter at the root (ill-conditioned solve)
+    if np.isfinite(sens) and scale == 'log' and abs(sens) < 0.1:
+        print(f"    WARNING: |{sens_lbl}| < 0.1 -- {name} is weakly constrained by Mdot here; a 1% "
+              f"change in Mdot shifts {name} by ~{1 / abs(sens):.0f}%.")
+    # the root sits in the first/last scan interval: Mdot may re-cross just outside the bracket
+    # (interval j spans scan points j..j+1, so the last interval is j = n_scan - 2;
+    #  an exact hit uses the scan-point index, whose last value is n_scan - 1)
+    if j == 0 or j == (n_scan - 2 if kind == 'interval' else n_scan - 1):
+        print(f"    NOTE: the root is in the outermost scan interval of the bracket; other roots "
+              f"outside [{lo:.4g}, {hi:.4g}] {unit} would not have been seen.")
 
     # ---- config copy for the rest of the run, with the solved value written in ----
     run_config = copy.deepcopy(config)
@@ -771,7 +939,7 @@ def build_transport(transport_params, wind_params, disc_params, dust_growth_para
     gas = None
     if transport_params['gas_transport']:
         if wind_params["on"]:
-            gas = HybridWindModel(wind_params['psi_DW'], lambda_DW, boundary = "Mdot_inn")
+            gas = HybridWindModel(wind_params['psi_DW'], lambda_DW, boundary = "Zero")
         else:
             gas = GAS_SOLVER()
 
