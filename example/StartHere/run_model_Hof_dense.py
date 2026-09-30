@@ -152,6 +152,27 @@ calibration.alpha_SS given, the fixed value is still disc.alpha / (1 + winds.psi
 and hold = "alpha_SS" is still rejected. The solver now prints which alpha is held
 and whether that came from the default or from calibration.hold.
 
+-(2026-09-30) (same code in run_model_Hof.py) New calibration mode "solve_for": "none" (fixed-parameter / no-solve):
+     "calibration": {"solve_for": "none"}
+ NOTHING is solved: alpha (TOTAL, dimensionless), M (Msun), Rd (AU), gamma, psi_DW and
+ e_rad (dimensionless) are all used exactly as given in the config, and the initial
+ inner accretion rate disc.Mdot(v_r)[0] (Msun/yr) becomes an OUTPUT instead of a target.
+ Why: every other mode forces Mdot at R_c[0] (~0.1 AU) to equal disc.Mdot, so changing
+ the Sigma profile (e.g. gamma = 1 -> 3/8 at fixed M, Rd) silently changes alpha too
+ (alpha_SS 1.36e-3 -> 4.59e-2 for M = 0.01 Msun, Mdot = 1e-8 Msun/yr, psi = 0.01),
+ and the comparison becomes an alpha comparison. With "none", runs share one viscosity.
+ Implemented in the new function _fixed_initial_disc() (one call to
+ evaluate_initial_disc(), same return dict as solve_initial_disc()), reached from the top
+ of solve_initial_disc(). disc.alpha must be numeric ('SS' is rejected: it is itself an
+ Mdot calibration); calibration keys bracket / rtol / n_scan / hold / alpha_SS are
+ rejected in this mode. It prints alpha, alpha_SS, the achieved initial Mdot vs the
+ nominal disc.Mdot, and the viscous time at Rd, t_nu = Rd^2 / (3 (2-gamma)^2 nu(Rd)) [yr].
+ The filename's Mdot token is still the NOMINAL disc.Mdot (output_filename() unchanged);
+ gamma is not in the filename, so runs differing only in gamma need different run_names.
+ HDF5 attrs for this mode: alpha_solver = 'none', alpha_total (dimensionless),
+ t_visc_Rd_yr (yr), plus the usual calib_* attrs (calib_Mdot = achieved initial Mdot,
+ Msun/yr; calib_Mdot_target = nominal disc.Mdot; calib_value / calib_guess = NaN;
+ calib_guess_mode = 'fixed').
 
 WHAT THIS RUNS
 --------------
@@ -583,6 +604,120 @@ def evaluate_initial_disc(grid, star, p, eos_params, kappa):
             'lambda_DW': lambda_DW, 'Mdot': float(Mdot)}
 
 
+# ---- (Hof, 2026-09-30) "no-solve" mode: calibration.solve_for = "none" ----
+# Every other calibration mode adjusts ONE parameter so the initial disc reproduces
+# config['disc']['Mdot'] at the inner cell R_c[0] (~0.1 AU). That makes the comparison of
+# two runs which differ in the Sigma profile (e.g. gamma = 1 vs gamma = 3/8 at fixed M and
+# Rd) implicitly a comparison of alpha as well: the shallower profile has ~30x less gas at
+# 0.1 AU, so the calibration raised alpha_SS ~34x (1.36e-3 -> 4.59e-2, M = 0.01 Msun,
+# Mdot = 1e-8 Msun/yr, psi = 0.01), and the discs then evolved on viscous times ~100x apart.
+# With solve_for = "none", NOTHING is solved: alpha (TOTAL), M, Rd, gamma, psi_DW and e_rad
+# are all taken from the config as given, and the initial inner Mdot becomes an OUTPUT
+# (printed, and stored in HDF5 attr calib_Mdot). Use this whenever two runs must share the
+# same viscosity, so that the only difference between them is the one you changed.
+#     "calibration": {"solve_for": "none"}
+# config['disc']['Mdot'] is then only a nominal label (it still appears in the output
+# filename via output_filename(), but it is NOT the disc's real initial Mdot).
+
+def _fixed_initial_disc(grid, star, config, kappa):
+    """
+    (Hof, 2026-09-30) Build the initial disc with ALL parameters fixed at their config
+    values -- no root-finding -- for config['calibration'] = {"solve_for": "none"}.
+
+    It is one call to evaluate_initial_disc() (same Sigma profile, mass normalisation,
+    lambda_DW, EOS and HybridWindModel velocity as every other mode), so the disc built here
+    is identical to what the solver would build if it happened to land on these values.
+
+    Returns
+    -------
+    Same dict shape as solve_initial_disc(), so run_model() can unpack it unchanged:
+        'disc', 'eos', 'Sigma' (g/cm^2), 'alpha' (TOTAL alpha, dimensionless),
+        'alpha_SS' (dimensionless), 'lambda_DW' (dimensionless),
+        'run_config' (deep copy of config, values unchanged, + 'calibration_result'),
+        'info'       (same keys as the solving path, plus 't_visc_Rd_yr').
+    """
+    calib = config['calibration']
+
+    # ---- keys that only make sense when something is being solved: reject, don't ignore ----
+    # (silently ignoring e.g. a leftover "bracket" would let the user believe it had an effect)
+    unused = [k for k in ('bracket', 'hold', 'alpha_SS', 'n_scan', 'rtol') if k in calib]
+    if unused:
+        raise ValueError(f"calibration.solve_for = 'none' solves nothing, so calibration keys "
+                         f"{unused} have no meaning; remove them (only 'solve_for' is used).")
+
+    # ---- full parameter set, straight from the config (units as in evaluate_initial_disc) ----
+    p = {
+        'alpha':  config['disc']['alpha'],    # TOTAL alpha = alpha_SS (1 + psi), dimensionless
+        'M':      config['disc']['M'],        # Msun
+        'Rd':     config['disc']['Rd'],       # AU
+        'gamma':  config['disc']['gamma'],    # Sigma power-law index, dimensionless
+        'psi_DW': config['winds']['psi_DW'],  # alpha_DW / alpha_SS, dimensionless
+        'e_rad':  config['winds']['e_rad'],   # fraction of accretion heating radiated, dimensionless
+    }
+    for k, v in p.items():
+        # 'SS' is rejected: steady_state_alpha_guess() is itself an Mdot calibration, which is
+        # exactly what this mode is meant to avoid.
+        if isinstance(v, str) or v is None:
+            raise ValueError(f"calibration.solve_for = 'none' needs every parameter numeric, got "
+                             f"{k} = {v!r}. Give alpha as a number (TOTAL alpha, dimensionless); "
+                             f"'SS' is an Mdot calibration and is not allowed in this mode.")
+        p[k] = float(v)
+
+    # ---- the ONE forward-model evaluation ----
+    res = evaluate_initial_disc(grid, star, p, config['eos'], kappa)
+    Mdot = res['Mdot']                                           # Msun / yr, at R_c[0]
+    Mdot_nominal = float(config['disc']['Mdot'])                 # Msun / yr, label only
+    if not np.isfinite(Mdot):
+        raise RuntimeError(f"calibration.solve_for = 'none': the initial disc gives a non-finite "
+                           f"Mdot at R_c[0] ({Mdot}); check the parameters {p}.")
+
+    # ---- viscous time at Rd (Lynden-Bell & Pringle), for comparing runs ----
+    #   t_nu = Rd^2 / (3 (2 - gamma)^2 nu(Rd))
+    # nu = alpha_SS c_s^2 / Omega_K is in code units (AU^2 per code-time unit; code time =
+    # yr / 2pi), so t_nu comes out in code-time units and is divided by `yr` (= 2pi) -> years.
+    # Note: the EOS nu contains alpha_SS only (the wind torque is not a viscosity), which is
+    # the usual definition of the viscous time in the hybrid wind model.
+    nu_Rd = float(np.interp(p['Rd'], grid.Rc, res['disc'].nu))   # AU^2 / code-time unit
+    t_visc_Rd = p['Rd'] ** 2 / (3 * (2 - p['gamma']) ** 2 * nu_Rd) / yr   # yr
+
+    info = {
+        'solve_for': 'none',
+        'guess': np.nan,                        # nothing was solved
+        'guess_mode': 'fixed',
+        'value': np.nan,                        # nothing was solved
+        'Mdot_target': Mdot_nominal,            # Msun / yr, NOMINAL only (not imposed)
+        'Mdot': float(Mdot),                    # Msun / yr, actual initial Mdot at R_c[0]
+        'Mdot_relerr': float(abs(Mdot / Mdot_nominal - 1)),   # dimensionless, informational only
+        'n_evals': 1,
+        'n_roots': 0,
+        'hold': 'alpha',                        # the TOTAL alpha from the config is used as given
+        'alpha_SS_fixed': np.nan,               # dimensionless; not used in this mode
+        't_visc_Rd_yr': float(t_visc_Rd),       # yr, viscous time at Rd (see above)
+    }
+
+    print(f"Calibration: solve_for = 'none' -> NO parameter solved; every value taken from the config.")
+    print(f"    total alpha = {p['alpha']:.4e}, alpha_SS = {res['alpha_SS']:.4e} (dimensionless); "
+          f"gamma = {p['gamma']:.4g}, M = {p['M']:.4g} Msun, Rd = {p['Rd']:.4g} AU, "
+          f"psi_DW = {p['psi_DW']:.4g}, e_rad = {p['e_rad']:.4g}")
+    print(f"    initial Mdot at R_c[0] = {grid.Rc[0]:.4g} AU: {Mdot:.4e} Msun/yr "
+          f"(nominal disc.Mdot = {Mdot_nominal:.4e} Msun/yr, ratio {Mdot / Mdot_nominal:.3g})")
+    print(f"    viscous time at Rd: t_nu = Rd^2 / (3 (2-gamma)^2 nu(Rd)) = {t_visc_Rd:.4e} yr")
+    print(f"    NOTE: the output filename's 'Mdot' token is the NOMINAL disc.Mdot; the real initial "
+          f"Mdot is stored in HDF5 attr calib_Mdot.")
+    if Mdot <= 0:
+        # physically possible (net OUTWARD flow at the inner edge when nu*Sigma rises steeply
+        # outward there); the run is still well defined, so warn rather than stop
+        print(f"    WARNING: Mdot at R_c[0] is <= 0 (net outward flow at the inner edge) for this "
+              f"parameter set; the run will still proceed.")
+
+    run_config = copy.deepcopy(config)          # values unchanged (nothing was solved)
+    run_config['calibration_result'] = info     # ends up in the logged config json
+
+    return {'disc': res['disc'], 'eos': res['eos'], 'Sigma': res['Sigma'],
+            'alpha': p['alpha'], 'alpha_SS': res['alpha_SS'],
+            'lambda_DW': res['lambda_DW'], 'run_config': run_config, 'info': info}
+
+
 def solve_initial_disc(grid, star, config, kappa):
     """
     Root-find ONE disc parameter (config['calibration']['solve_for']) so that
@@ -592,7 +727,11 @@ def solve_initial_disc(grid, star, config, kappa):
     config['calibration'] keys
     --------------------------
     solve_for : str, required   -- one of _SOLVABLE_PARAMS ('alpha', 'M', 'Rd',
-                                   'gamma', 'psi_DW', 'e_rad')
+                                   'gamma', 'psi_DW', 'e_rad'), or (Hof, 2026-09-30)
+                                   'none': solve nothing, use every config value as
+                                   given (see _fixed_initial_disc(); the other keys
+                                   below are then rejected, and disc.Mdot is only a
+                                   nominal label -- the real initial Mdot is an output)
     bracket   : [lo, hi], opt.  -- search range in the parameter's own units
                                    (default: the range in _SOLVABLE_PARAMS)
     rtol      : float, opt.     -- max allowed |Mdot/Mdot_target - 1| (default 1e-6)
@@ -638,8 +777,13 @@ def solve_initial_disc(grid, star, config, kappa):
     """
     calib = config['calibration']
     name = calib['solve_for']
+    # (Hof, 2026-09-30) solve_for = 'none': solve NOTHING, build the disc from the config
+    # values as given (alpha is an input, the initial Mdot an output). See the comment block
+    # above _fixed_initial_disc() for why this is needed when comparing e.g. gamma values.
+    if name == 'none':
+        return _fixed_initial_disc(grid, star, config, kappa)
     if name not in _SOLVABLE_PARAMS:
-        raise ValueError(f"calibration.solve_for must be one of {list(_SOLVABLE_PARAMS)}, got {name!r}")
+        raise ValueError(f"calibration.solve_for must be one of {list(_SOLVABLE_PARAMS)} or 'none', got {name!r}")
     section, key, scale, (lo, hi) = _SOLVABLE_PARAMS[name]
     if name == "Rd" and hi is None:
         hi = float(grid.Rc[-1])                                  # AU, outermost cell centre
@@ -1534,11 +1678,18 @@ def run_model(config, cli_output_dir=None):
     # _SOLVABLE_PARAMS), and how well Mdot matches. (run_model_Hof.py's alpha_guess /
     # alpha_guess_mode attrs are not written here: this file never had the 'SS' feature.)
     h5f.attrs["alpha_solver"] = 'brentq' if calib is not None else 'damped_iteration'
+    # (Hof, 2026-09-30, same as run_model_Hof.py) calibration.solve_for = 'none': nothing was
+    # solved (no Brent call), so label the solver 'none' and store the inputs needed to compare
+    # such runs directly
+    if calib is not None and calib['info']['solve_for'] == 'none':
+        h5f.attrs["alpha_solver"] = 'none'
+        h5f.attrs["alpha_total"] = float(alpha)                          # TOTAL alpha = alpha_SS (1 + psi), dimensionless
+        h5f.attrs["t_visc_Rd_yr"] = calib['info']['t_visc_Rd_yr']       # yr, viscous time at Rd (see _fixed_initial_disc)
     if calib is not None:
         info = calib['info']
         h5f.attrs["calib_solve_for"] = info['solve_for']
         h5f.attrs["calib_guess"] = info['guess']
-        h5f.attrs["calib_guess_mode"] = info['guess_mode']       # 'SS' or 'config'
+        h5f.attrs["calib_guess_mode"] = info['guess_mode']       # 'SS' or 'config'; 'fixed' for solve_for = 'none' (Hof, 2026-09-30)
         h5f.attrs["calib_value"] = info['value']
         h5f.attrs["calib_Mdot_target"] = info['Mdot_target']     # Msun / yr
         h5f.attrs["calib_Mdot"] = info['Mdot']                   # Msun / yr, achieved at R_c[0]
