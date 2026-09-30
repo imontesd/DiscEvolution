@@ -98,6 +98,16 @@ with one further addition -- see that file's own docstring.)
    * run_model(): if the config has NO "calibration" section, prints a NOTE saying the
      root-finder is not used (damped-iteration fallback) and listing the section's keys.
 
+-(2026-09-30) DEFAULT CHANGED for calibration.hold when solve_for = "psi_DW": it is now
+ "alpha_SS" (viscous alpha fixed; total alpha = alpha_SS (1 + psi) recomputed at each
+ trial psi). The TOTAL alpha is held fixed only if the config explicitly has
+     "calibration": {"solve_for": "psi_DW", "hold": "alpha"}
+ This supersedes the "default" stated in the 2026-09-28 entry above. With no
+ calibration.alpha_SS given, the fixed value is still disc.alpha / (1 + winds.psi_DW)
+ (dimensionless) from the config. For any other solve_for the default remains "alpha"
+ and hold = "alpha_SS" is still rejected. The solver now prints which alpha is held
+ and whether that came from the default or from calibration.hold.
+
 
 WHAT THIS RUNS
 --------------
@@ -381,7 +391,7 @@ def steady_state_alpha_guess(grid, star, config, kappa):
 #                                            ≈ 3 pi Sigma (c_s^2/Omega) alpha_SS (1 + psi)
 #   IrradiatedEOS heating              Q     = e_rad (9/8) alpha_SS c_s^2 Omega Sigma (1 + psi/3)
 #
-# (a) TOTAL alpha fixed (hold = "alpha", default): alpha_SS (1 + psi) = alpha_tot, so
+# (a) TOTAL alpha fixed (hold = "alpha", only if set explicitly): alpha_SS (1 + psi) = alpha_tot, so
 #       Mdot ≈ 3 pi Sigma (c_s^2/Omega) alpha_tot    -- psi drops out of the prefactor.
 #     psi only enters through T, via the heating factor
 #       alpha_SS (1 + psi/3) = alpha_tot (1 + psi/3)/(1 + psi),
@@ -392,7 +402,7 @@ def steady_state_alpha_guess(grid, star, config, kappa):
 #       delta ln psi = delta ln(Mdot/alpha_tot) / (d ln Mdot / d ln psi) ~ 20 x delta ln alpha
 #     -> psi is ill-conditioned: only a narrow window of alpha has a root at all, and
 #        the root moves a lot for small changes in alpha.
-# (b) alpha_SS fixed (hold = "alpha_SS"):
+# (b) alpha_SS fixed (hold = "alpha_SS", DEFAULT for solve_for = "psi_DW" since 2026-09-30):
 #       Mdot ≈ 3 pi Sigma (c_s^2/Omega) alpha_SS (1 + psi)   -- psi multiplies Mdot directly,
 #     and the heating also grows with psi (same sign), so
 #       d ln Mdot / d ln psi ≈ psi/(1 + psi) + (small, positive)  -> ~1 for psi >~ 1:
@@ -509,9 +519,10 @@ def solve_initial_disc(grid, star, config, kappa):
     rtol      : float, opt.     -- max allowed |Mdot/Mdot_target - 1| (default 1e-6)
     n_scan    : int, opt.       -- number of points in the coarse scan (default 31)
     hold      : str, opt.       -- (Hof, only with solve_for = 'psi_DW') which alpha stays
-                                   fixed while psi varies: 'alpha' (default; TOTAL alpha =
-                                   disc.alpha fixed) or 'alpha_SS' (viscous alpha fixed,
-                                   total alpha = alpha_SS (1 + psi) at each trial psi).
+                                   fixed while psi varies: 'alpha_SS' (default since
+                                   2026-09-30; viscous alpha fixed, total alpha =
+                                   alpha_SS (1 + psi) at each trial psi) or 'alpha' (TOTAL
+                                   alpha = disc.alpha fixed; only if set explicitly).
                                    See the equations above _SOLVABLE_PARAMS for why
                                    'alpha_SS' is much better conditioned.
     alpha_SS  : float, opt.     -- (Hof, only with hold = 'alpha_SS') the fixed viscous
@@ -585,10 +596,17 @@ def solve_initial_disc(grid, star, config, kappa):
         guess = steady_state_alpha_guess(grid, star, config, kappa)   # total alpha, dimensionless
         guess_mode = 'SS'
     # ---- (Hof) which alpha is held fixed while solving for psi_DW ----
-    #   hold = 'alpha'    : total alpha p['alpha'] fixed (default, previous behaviour)
+    #   hold = 'alpha'    : total alpha p['alpha'] fixed (must be requested explicitly for psi_DW)
     #   hold = 'alpha_SS' : viscous alpha fixed at alpha_SS_fixed (dimensionless); the total
     #                       alpha passed to evaluate_initial_disc is alpha_SS_fixed (1 + psi)
-    hold = calib.get('hold', 'alpha')
+    # (Hof, 2026-09-30) DEFAULT CHANGED: when solving for psi_DW the default is now
+    # hold = 'alpha_SS' (viscous alpha fixed, well-conditioned; see case (b) above
+    # _SOLVABLE_PARAMS). The TOTAL alpha is held fixed only if the config says so
+    # explicitly with "hold": "alpha" in the calibration section. For every other
+    # solve_for the default stays 'alpha' (hold = 'alpha_SS' is not valid there).
+    hold_default = 'alpha_SS' if name == 'psi_DW' else 'alpha'
+    hold = calib.get('hold', hold_default)
+    hold_src = 'calibration.hold' if 'hold' in calib else 'default'   # for the printed message below
     if hold not in ('alpha', 'alpha_SS'):
         raise ValueError(f"calibration.hold must be 'alpha' or 'alpha_SS', got {hold!r}")
     if name != 'psi_DW' and (hold != 'alpha' or 'alpha_SS' in calib):
@@ -612,8 +630,16 @@ def solve_initial_disc(grid, star, config, kappa):
             alpha_SS_src = f"disc.alpha / (1 + psi_DW) = {float(alpha_tot_cfg):.4g} / (1 + {float(p['psi_DW']):.4g})"
         if not alpha_SS_fixed > 0:
             raise ValueError(f"calibration: fixed alpha_SS must be > 0, got {alpha_SS_fixed}")
-        print(f"Calibration: holding alpha_SS = {alpha_SS_fixed:.4e} fixed (from {alpha_SS_src}); "
-              f"total alpha = alpha_SS (1 + psi) varies with psi.")
+        # (Hof, 2026-09-30) also say whether hold = 'alpha_SS' was chosen by default or explicitly
+        print(f"Calibration: holding alpha_SS = {alpha_SS_fixed:.4e} (dimensionless) fixed "
+              f"[hold = 'alpha_SS' from {hold_src}; alpha_SS from {alpha_SS_src}]; "
+              f"total alpha = alpha_SS (1 + psi) varies with psi. "
+              f"Set \"hold\": \"alpha\" in the calibration section to hold the TOTAL alpha instead.")
+    elif name == 'psi_DW':
+        # (Hof, 2026-09-30) total alpha held fixed only on explicit request ("hold": "alpha")
+        # (p['alpha'] printed as-is: a non-numeric 'SS' is rejected with a clear error just below)
+        print(f"Calibration: holding TOTAL alpha = {p['alpha']} (dimensionless) fixed "
+              f"[hold = 'alpha' from calibration.hold]; alpha_SS = alpha / (1 + psi) varies with psi.")
 
     for k, v in p.items():
         if hold_SS and k == 'alpha':
@@ -846,7 +872,8 @@ def solve_initial_disc(grid, star, config, kappa):
         # _SOLVABLE_PARAMS): Mdot varies by only ~x2 over psi = 1e-3..1e3
         if name == 'psi_DW' and not hold_SS:
             msg.append("  HINT: with total alpha fixed (hold = 'alpha'), Mdot depends only weakly and "
-                       "boundedly on psi_DW; consider \"hold\": \"alpha_SS\" in the calibration section.")
+                       "boundedly on psi_DW; consider removing \"hold\": \"alpha\" from the calibration "
+                       "section (the default for psi_DW is hold = 'alpha_SS').")
         # (Hof) the suggested fix now depends on the case above, instead of always
         # "widen the bracket" (which contradicted cases (c)/(d))
         msg.append(f"  Fix: {fix}")
@@ -1465,8 +1492,8 @@ def run_model(config, cli_output_dir=None):
               "LIST (not a string); default from _SOLVABLE_PARAMS\n"
               "        rtol      (optional) : max |Mdot/Mdot_target - 1| accepted, dimensionless (default 1e-6)\n"
               "        n_scan    (optional) : number of coarse-scan points across the bracket (default 31)\n"
-              "        hold      (optional) : only with solve_for = 'psi_DW'; 'alpha' (default, TOTAL alpha "
-              "fixed) or 'alpha_SS' (viscous alpha fixed, recommended)\n"
+              "        hold      (optional) : only with solve_for = 'psi_DW'; 'alpha_SS' (default, viscous alpha "
+              "fixed) or 'alpha' (TOTAL alpha fixed, must be set explicitly)\n"
               "        alpha_SS  (optional) : only with hold = 'alpha_SS'; fixed viscous alpha, dimensionless "
               "(default disc.alpha / (1 + winds.psi_DW))")
 

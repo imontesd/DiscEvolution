@@ -45,7 +45,8 @@
   },
   
   "calibration":{
-    "solve_for": "alpha"
+    "solve_for": "alpha",
+    "bracket": [1.2e-4, 1e-2]
   },
   
   "eos": {
