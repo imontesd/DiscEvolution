@@ -108,6 +108,50 @@ loop) is unaffected. The DENSE_T_MIN_MYR/DENSE_T_MAX_MYR time-window
 restriction inside write_dense_variable_row() is unchanged and still applies
 on top of this step cadence.
 
+-(2026-09-25) Ported the generic initial-disc root-finder from run_model_Hof.py
+(functions copied verbatim: steady_state_alpha_guess(), _SOLVABLE_PARAMS,
+evaluate_initial_disc(), solve_initial_disc(), _build_grid_star_kappa()). Opt-in
+via an optional config section, e.g.
+    "calibration": {"solve_for": "psi_DW", "bracket": [0.01, 100], "rtol": 1e-6}
+It holds every parameter fixed except calibration.solve_for (one of alpha, M, Rd,
+gamma, psi_DW, e_rad) and finds, with a coarse scan + scipy brentq, the value for
+which the inner accretion rate disc.Mdot(v_r)[0] equals config['disc']['Mdot']
+(Msun/yr). The config value of the solved parameter is only the initial guess.
+If no value reaches the target (or Mdot does not depend on the parameter), it
+raises with an explanation. The solve runs BEFORE the output filename/skip check,
+and the rest of the run uses a config copy with the solved value written in.
+New HDF5 attrs: alpha_solver, calib_solve_for, calib_guess, calib_guess_mode,
+calib_value, calib_Mdot_target, calib_Mdot, calib_Mdot_relerr, calib_n_evals,
+calib_n_roots. Differences from run_model_Hof.py: steady_state_alpha_guess() was
+copied only as a dependency, so config['disc']['alpha'] = 'SS' works here ONLY
+with "calibration": {"solve_for": "alpha"} (the non-calibration path still needs
+a numeric alpha); no alpha_guess / alpha_guess_mode attrs; and this file's
+alpha_SS out-of-range abort (1e-5 < alpha_SS < 0.1) is kept and applies to the
+calibrated alpha_SS too. Without a "calibration" section, behaviour is unchanged.
+
+-(2026-09-28) Ported from run_model_Hof.py (same code): option to hold the VISCOUS
+alpha_SS fixed (instead of the TOTAL alpha) when solving for psi_DW. New optional
+calibration keys, only valid with solve_for = "psi_DW":
+    "calibration": {"solve_for": "psi_DW", "hold": "alpha_SS", "alpha_SS": 1e-4}
+  hold     : "alpha" (default, previous behaviour: total alpha = disc.alpha fixed)
+             or "alpha_SS" (alpha_SS fixed; total alpha = alpha_SS (1 + psi) at each trial psi)
+  alpha_SS : fixed viscous alpha, dimensionless; default disc.alpha / (1 + winds.psi_DW).
+Why: at fixed total alpha Mdot(R_c[0]) depends on psi only through the (bounded, <= x3)
+heating, so psi is ill-conditioned; at fixed alpha_SS, Mdot ~ (1 + psi). Derivation in
+the comment block above _SOLVABLE_PARAMS. New info entries 'hold', 'alpha_SS_fixed';
+new HDF5 attrs calib_hold (str), calib_alpha_SS_fixed (dimensionless, NaN if hold = 'alpha').
+
+-(2026-09-30) Ported from run_model_Hof.py (same code): DEFAULT CHANGED for
+calibration.hold when solve_for = "psi_DW": it is now "alpha_SS" (viscous alpha fixed;
+total alpha = alpha_SS (1 + psi) recomputed at each trial psi). The TOTAL alpha is held
+fixed only if the config explicitly has
+    "calibration": {"solve_for": "psi_DW", "hold": "alpha"}
+This supersedes the "default" stated in the 2026-09-28 entry above. With no
+calibration.alpha_SS given, the fixed value is still disc.alpha / (1 + winds.psi_DW)
+(dimensionless) from the config. For any other solve_for the default remains "alpha"
+and hold = "alpha_SS" is still rejected. The solver now prints which alpha is held
+and whether that came from the default or from calibration.hold.
+
 
 WHAT THIS RUNS
 --------------
@@ -168,11 +212,14 @@ import json
 import time
 import csv                      # for the per-run config_log/run_log.csv index (log_config(), added for Isaac's Hof project)
 from datetime import datetime   # timestamps for log_config()
+import copy                     # deep-copy config in solve_initial_disc() (generic calibration, Hof project)
 
 import numpy as np
 import h5py
 
-from DiscEvolution.constants import AU, Msun, yr
+from DiscEvolution.constants import AU, Msun, yr, Omega0, GasConst, sig_SB   # Omega0, GasConst, sig_SB added for steady_state_alpha_guess()
+from DiscEvolution.disc import AccretionDisc      # Sigma normalisation in steady_state_alpha_guess() / evaluate_initial_disc()
+from DiscEvolution.brent import brentq            # same vectorised Brent solver IrradiatedEOS uses (steady_state_alpha_guess)
 from DiscEvolution.grid import Grid
 from DiscEvolution.star import SimpleStar
 from DiscEvolution.opacity import Tazzari2016, Zhu2012
@@ -185,6 +232,13 @@ from DiscEvolution.chemistry import (
 )
 
 from disc_setup import setup_disc
+# make_eos: reused (not copied) by evaluate_initial_disc() below so the generic
+# root-finder builds EXACTLY the same EOS object as disc_setup.winds_alpha_disc() (Hof project).
+from disc_setup import make_eos
+# SciPy's scalar Brent root-finder, used by solve_initial_disc() (Hof project).
+# Imported under a different name because `brentq` above is DiscEvolution's
+# VECTORISED Brent solver (used by steady_state_alpha_guess), with a different call signature.
+from scipy.optimize import brentq as scipy_brentq
 
 GAS_SOLVER = ViscousEvolutionFV   # viscous-evolution scheme used when winds are off
 
@@ -292,6 +346,521 @@ def compute_ice_lines(chem, grid, threshold=0.5):
 
 
 # ============================================================================
+# Steady-state initial guess for alpha (added for Isaac's Hof project)
+# ============================================================================
+
+def steady_state_alpha_guess(grid, star, config, kappa):
+    """
+    Steady-state estimate of the TOTAL alpha (alpha_SS + alpha_DW), used as the
+    starting guess for the alpha-calibration loop in disc_setup.winds_alpha_disc()
+    when config['disc']['alpha'] == 'SS'.
+
+    Idea: in a steady disc, Mdot = 3 pi nu_SS Sigma (1 + psi), with
+    nu_SS = alpha_SS c_s^2 / Omega_K and alpha = alpha_SS (1 + psi), so
+
+        alpha * c_s^2 = Mdot * Omega_K / (3 pi Sigma)                    (*)
+
+    Substituting (*) into the viscous heating term of IrradiatedEOS removes
+    alpha from the energy balance, so T(R) can be solved from Mdot alone
+    (one Brent solve, no iteration). alpha then follows from (*) with c_s(T).
+
+    Everything below mirrors disc_setup.winds_alpha_disc (Sigma profile) and
+    DiscEvolution/eos.py IrradiatedEOS.update/balance (energy balance), with
+    only the viscous heating term rewritten in terms of Mdot.
+
+    Returns
+    -------
+    alpha_guess : float
+        Total alpha (dimensionless) at the inner cell R_c[0], which is where
+        winds_alpha_disc measures Mdot.
+    """
+    disc_params = config['disc']
+    eos_params = config['eos']
+    wind_params = config['winds']
+
+    # ---- inputs (units in comments) ----
+    Mdot_target = disc_params['Mdot']            # Msun / yr
+    Mdisk = disc_params['M'] * Msun              # g
+    Rd = disc_params['Rd']                       # AU
+    gamma = disc_params['gamma']                 # Sigma power-law index (dimensionless)
+    psi = wind_params['psi_DW']                  # alpha_DW / alpha_SS (dimensionless)
+    e_rad = wind_params['e_rad']                 # fraction of heating radiated (dimensionless)
+    Tmax = eos_params['Tmax']                    # K, temperature cap (same as IrradiatedEOS)
+
+    # IrradiatedEOS defaults (eos.py:315), NOT read from the config.
+    # If these defaults are ever changed in make_eos/IrradiatedEOS, change them here too.
+    Tc = 10.0                                    # K, external/nebular temperature floor
+    mu = 2.4                                     # g / mol, mean molecular weight
+    amax = 1e-5                                  # cm, grain size passed to the opacity
+    tauP_over_tauR = 2.4                         # Planck/Rosseland optical-depth ratio
+    dlogHdlogRm1 = 2 / 7.                        # flaring index used in f_flare
+
+    # Mdot in cgs. Omega0 = 2 pi / (1 yr in s), so 1 yr = 2 pi / Omega0 seconds.
+    sec_per_yr = 2 * np.pi / Omega0              # s / yr
+    Mdot_cgs = Mdot_target * Msun / sec_per_yr   # g / s
+
+    # ---- Sigma(R): identical to disc_setup.winds_alpha_disc ----
+    R = grid.Rc                                  # AU
+    Sigma = (R / Rd) ** (-gamma) * np.exp(-(R / Rd) ** (2 - gamma))
+    Sigma *= Mdisk / AccretionDisc(grid, star, eos=None, Sigma=Sigma).Mtot()   # g / cm^2
+
+    # ---- stellar/geometric factors: identical to IrradiatedEOS.update ----
+    Om_k = Omega0 * star.Omega_k(R)              # s^-1
+    X = star.Rau / R                             # R_star / R (dimensionless)
+    f_flat = (2 / (3 * np.pi)) * X ** 3
+    f_flare = 0.5 * dlogHdlogRm1 * X ** 2
+    star_heat = sig_SB * star.T_eff ** 4         # erg cm^-2 s^-1
+    max_heat = sig_SB * Tmax ** 4                # erg cm^-2 s^-1
+    ext_heat = sig_SB * Tc ** 4                  # erg cm^-2 s^-1
+
+    # Alpha-free viscous(+wind) heating prefactor. In IrradiatedEOS:
+    #   Q_visc = e_rad (9/8) alpha_SS c_s^2 Om_k (1 + psi/3) Sigma [3/8 tau_R + 1/tau_P]
+    # With alpha_SS c_s^2 = Mdot Om_k / (3 pi Sigma (1 + psi)) from (*):
+    #   Q_visc = e_rad (3 / 8pi) Mdot Om_k^2 (1 + psi/3)/(1 + psi) [3/8 tau_R + 1/tau_P]
+    # (= e_rad * 3 G M Mdot / (8 pi R^3) * wind factors). Units: erg cm^-2 s^-1.
+    visc_prefactor = e_rad * (3 / (8 * np.pi)) * Mdot_cgs * Om_k ** 2 \
+        * (1 + psi / 3) / (1 + psi)
+
+    sqrt2pi = np.sqrt(2 * np.pi)
+
+    def balance(Tm):
+        """Net heating (erg cm^-2 s^-1) at midplane temperature Tm (K); root = T."""
+        cs = np.sqrt(GasConst * Tm / mu)         # cm / s, isothermal sound speed
+        H = cs / Om_k                            # cm, scale height
+        kap = kappa(Sigma / (sqrt2pi * H), Tm, amax)   # cm^2 / g, at midplane density
+        tauR = 0.5 * Sigma * kap                 # Rosseland optical depth
+        tauP = tauP_over_tauR * tauR             # Planck optical depth
+
+        dEdt = ext_heat
+        dEdt = dEdt + star_heat * (f_flat + f_flare * (H / AU) / R)   # H/R with both in AU
+        dEdt = dEdt + visc_prefactor * (3. / 8. * tauR + 1. / tauP)
+        dEdt = np.minimum(dEdt, max_heat)        # temperature cap, as in IrradiatedEOS
+        return dEdt - sig_SB * Tm ** 4
+
+    # Same bracket as the first IrradiatedEOS solve: [Tc, Tmax] at every radius.
+    T = brentq(balance, Tc * np.ones_like(R), Tmax * np.ones_like(R))   # K
+
+    # ---- closed-form alpha from (*) at the inner cell ----
+    cs2 = GasConst * T[0] / mu                   # cm^2 / s^2
+    alpha_guess = Mdot_cgs * Om_k[0] / (3 * np.pi * Sigma[0] * cs2)     # dimensionless, TOTAL alpha
+    return float(alpha_guess)
+
+
+# ============================================================================
+# Generic root-finder for the initial disc (added for Isaac's Hof project)
+# ============================================================================
+#
+# disc_setup.winds_alpha_disc() can only solve for alpha, and does so with 100
+# damped fixed-point updates. The functions below generalise that to "hold
+# every parameter fixed except ONE, and root-find that one so the disc
+# reproduces the target accretion rate":
+#
+#     g(x) = log10( Mdot_inner(p) / Mdot_target ) = 0
+#
+#   p            : the full parameter set (alpha, M, Rd, gamma, psi_DW, e_rad)
+#   x            : the free parameter, as log10(value) for 'log'-scaled
+#                  parameters or the value itself for 'linear' ones
+#   Mdot_inner   : Msun/yr, measured exactly like winds_alpha_disc does it,
+#                  i.e. disc.Mdot(v_r)[0] at the inner cell R_c[0]
+#   Mdot_target  : Msun/yr, config['disc']['Mdot']
+#
+# Using log10 of the RATIO (not the difference) keeps g O(1) whatever the
+# target Mdot is, so the same absolute tolerances work for every run.
+#
+# Turned on by adding a "calibration" section to the config, e.g.
+#     "calibration": {"solve_for": "psi_DW", "bracket": [0.01, 100]}
+# With no "calibration" section, run_model() behaves exactly as before
+# (disc_setup.setup_disc damped loop).
+#
+# ---- (Hof, 2026-09-28) Solving for psi_DW: hold alpha_SS fixed, not total alpha ----
+# (Same block as in run_model_Hof.py.) Relevant equations, as implemented in the code:
+#   viscosity  (EOS gets alpha_SS)     nu    = alpha_SS c_s^2 / Omega        (c_s^2 ∝ T)
+#   HybridWindModel.viscous_velocity   v_r   = -3/(Sigma sqrt(R)) d/dR(nu Sigma sqrt(R))   [viscous]
+#                                              - (3/2) psi nu / R                             [wind]
+#   accretion rate                     Mdot  = -2 pi R Sigma v_r ≈ 3 pi Sigma nu (k + psi),  k = O(1)
+#                                            ≈ 3 pi Sigma (c_s^2/Omega) alpha_SS (1 + psi)
+#   IrradiatedEOS heating              Q     = e_rad (9/8) alpha_SS c_s^2 Omega Sigma (1 + psi/3)
+#
+# (a) TOTAL alpha fixed (hold = "alpha", only if set explicitly): alpha_SS (1 + psi) = alpha_tot, so
+#       Mdot ≈ 3 pi Sigma (c_s^2/Omega) alpha_tot    -- psi drops out of the prefactor.
+#     psi only enters through T, via the heating factor
+#       alpha_SS (1 + psi/3) = alpha_tot (1 + psi/3)/(1 + psi),
+#     which goes from alpha_tot (psi -> 0) to alpha_tot/3 (psi -> inf): at most a
+#     factor 3 in heating, and T ∝ Q^s with s <~ 1/3 (s = 0 where irradiation or the
+#     Tmax cap dominate). So Mdot(psi) is BOUNDED (Ben config: only x2.1 over
+#     psi = 1e-3..1e3) and d ln Mdot / d ln psi ~ 0.05. Error propagation:
+#       delta ln psi = delta ln(Mdot/alpha_tot) / (d ln Mdot / d ln psi) ~ 20 x delta ln alpha
+#     -> psi is ill-conditioned: only a narrow window of alpha has a root at all, and
+#        the root moves a lot for small changes in alpha.
+# (b) alpha_SS fixed (hold = "alpha_SS", DEFAULT for solve_for = "psi_DW" since 2026-09-30):
+#       Mdot ≈ 3 pi Sigma (c_s^2/Omega) alpha_SS (1 + psi)   -- psi multiplies Mdot directly,
+#     and the heating also grows with psi (same sign), so
+#       d ln Mdot / d ln psi ≈ psi/(1 + psi) + (small, positive)  -> ~1 for psi >~ 1:
+#     monotonic, unbounded (Ben config: x480 over the same range), well-conditioned.
+#     Caveat: for psi << 1 the slope -> 0 here too; Mdot cannot constrain very weak winds.
+# (b) is also the physical picture: fixed turbulence plus a wind of strength psi,
+#     alpha_DW = psi alpha_SS.
+
+# Registry of parameters the solver can solve for.
+#   solve_for name -> (config section, config key, search scale, default search range)
+# Search ranges are in the parameter's own units (see comments). A range can be
+# overridden per run with config['calibration']['bracket'] = [lo, hi].
+# To make another parameter solvable: add a row here AND make sure
+# evaluate_initial_disc() actually uses p[<name>].
+_SOLVABLE_PARAMS = {
+    #  name       section   key        scale     default [lo, hi]
+    "alpha":  ("disc",  "alpha",  "log",    (1e-6, 1.0)),     # TOTAL alpha = alpha_SS (1 + psi), dimensionless
+    "M":      ("disc",  "M",      "log",    (1e-5, 1.0)),     # disc mass, Msun
+    "Rd":     ("disc",  "Rd",     "log",    (1.0, None)),     # characteristic radius, AU (None -> outermost cell centre grid.Rc[-1])
+    "gamma":  ("disc",  "gamma",  "linear", (0.0, 1.9)),      # Sigma power-law index, dimensionless (must stay < 2)
+    "psi_DW": ("winds", "psi_DW", "log",    (1e-3, 1e3)),     # alpha_DW / alpha_SS, dimensionless (psi = 0 not reachable in log space)
+    "e_rad":  ("winds", "e_rad",  "linear", (0.0, 0.999)),    # fraction of accretion heating radiated, dimensionless (must stay < 1)
+}
+
+
+def evaluate_initial_disc(grid, star, p, eos_params, kappa):
+    """
+    Forward model: build the initial gas disc for ONE fixed parameter set and
+    measure its inner accretion rate. This is exactly one pass of the loop
+    body in disc_setup.winds_alpha_disc() (same Sigma profile, same
+    normalisation, same lambda_DW formula, same EOS via make_eos, same
+    HybridWindModel velocity), with no alpha update afterwards.
+
+    Parameters
+    ----------
+    grid, star, kappa : as in run_model()
+    p : dict with keys
+        'alpha'  -- TOTAL alpha (alpha_SS + alpha_DW), dimensionless
+        'M'      -- disc mass, Msun
+        'Rd'     -- characteristic radius, AU
+        'gamma'  -- Sigma power-law index, dimensionless
+        'psi_DW' -- alpha_DW / alpha_SS, dimensionless
+        'e_rad'  -- fraction of accretion heating radiated, dimensionless
+    eos_params : config['eos']
+
+    Returns
+    -------
+    dict with
+        'disc'      -- AccretionDisc built with this EOS and Sigma
+        'eos'       -- the EOS object (T, c_s, H at this alpha_SS)
+        'Sigma'     -- g / cm^2, normalised to p['M']
+        'alpha_SS'  -- viscous alpha = alpha / (1 + psi), dimensionless
+        'lambda_DW' -- wind lever-arm parameter, dimensionless (inf if no wind)
+        'Mdot'      -- Msun / yr, accretion rate at the inner cell R_c[0]
+    """
+    alpha = p['alpha']            # total alpha, dimensionless
+    Mdisk = p['M'] * Msun         # g
+    Rd = p['Rd']                  # AU
+    gamma = p['gamma']            # dimensionless
+    psi = p['psi_DW']             # dimensionless
+    e_rad = p['e_rad']            # dimensionless
+
+    # Wind lever arm: identical to disc_setup.winds_alpha_disc (psi -> 0 gives inf;
+    # it then multiplies a wind velocity that is already exactly zero).
+    if psi > 0 and e_rad < 1.0:
+        lambda_DW = 1 / (2 * (1 - e_rad) * (3 / psi + 1)) + 1
+    else:
+        lambda_DW = np.inf
+    alpha_SS = alpha / (1 + psi)  # viscous-only alpha, what the EOS heating uses
+
+    # Sigma(R), g / cm^2: same self-similar profile + mass normalisation as winds_alpha_disc
+    R = grid.Rc                   # AU
+    Sigma = (R / Rd) ** (-gamma) * np.exp(-(R / Rd) ** (2 - gamma))
+    Sigma *= Mdisk / AccretionDisc(grid, star, eos=None, Sigma=Sigma).Mtot()
+
+    # EOS (temperature structure) for this alpha_SS / psi / e_rad
+    eos = make_eos(eos_params, star, alpha_SS, kappa=kappa, psi=psi, e_rad=e_rad)
+    eos.set_grid(grid)
+    eos.update(0, Sigma)
+
+    # Inner accretion rate, Msun / yr (AccretionDisc.Mdot already converts to Msun/yr)
+    disc = AccretionDisc(grid, star, eos, Sigma)
+    gas = HybridWindModel(psi, lambda_DW)
+    v_r = gas.viscous_velocity(disc, Sigma)
+    Mdot = disc.Mdot(v_r)[0]
+
+    return {'disc': disc, 'eos': eos, 'Sigma': Sigma, 'alpha_SS': alpha_SS,
+            'lambda_DW': lambda_DW, 'Mdot': float(Mdot)}
+
+
+def solve_initial_disc(grid, star, config, kappa):
+    """
+    Root-find ONE disc parameter (config['calibration']['solve_for']) so that
+    the initial disc's inner accretion rate equals config['disc']['Mdot'],
+    holding every other parameter at its config value.
+
+    config['calibration'] keys
+    --------------------------
+    solve_for : str, required   -- one of _SOLVABLE_PARAMS ('alpha', 'M', 'Rd',
+                                   'gamma', 'psi_DW', 'e_rad')
+    bracket   : [lo, hi], opt.  -- search range in the parameter's own units
+                                   (default: the range in _SOLVABLE_PARAMS)
+    rtol      : float, opt.     -- max allowed |Mdot/Mdot_target - 1| (default 1e-6)
+    n_scan    : int, opt.       -- number of points in the coarse scan (default 31)
+    hold      : str, opt.       -- (Hof, only with solve_for = 'psi_DW') which alpha stays
+                                   fixed while psi varies: 'alpha_SS' (default since
+                                   2026-09-30; viscous alpha fixed, total alpha =
+                                   alpha_SS (1 + psi) at each trial psi) or 'alpha' (TOTAL
+                                   alpha = disc.alpha fixed; only if set explicitly).
+                                   See the equations above _SOLVABLE_PARAMS for why
+                                   'alpha_SS' is much better conditioned.
+    alpha_SS  : float, opt.     -- (Hof, only with hold = 'alpha_SS') the fixed viscous
+                                   alpha, dimensionless. Default: disc.alpha / (1 + psi_DW)
+                                   from the config.
+
+    The config value of the solved parameter is used ONLY as the initial
+    guess (to pick a root if there are several). For 'alpha' it may be 'SS'
+    (steady_state_alpha_guess). Every other parameter must be numeric (except
+    disc.alpha with hold = 'alpha_SS', which is not used as a fixed value then).
+
+    Method
+    ------
+    1. Coarse scan: evaluate g(x) at n_scan points evenly spaced in x across
+       [lo, hi] (x = log10(value) for 'log' parameters). Mdot can depend only
+       weakly on psi_DW / e_rad / Rd, so a target may be unreachable; if g
+       never changes sign we raise with the reachable Mdot range instead of
+       returning something meaningless.
+    2. Pick the sign-change interval closest to the guess (warn if >1).
+    3. scipy.optimize.brentq inside that interval.
+    4. Rebuild the disc AT the root (so returned disc/eos/alpha are mutually
+       consistent) and check |Mdot/Mdot_target - 1| < rtol.
+
+    Returns
+    -------
+    dict with
+        'disc', 'eos', 'Sigma', 'alpha', 'alpha_SS', 'lambda_DW'
+                      -- same meaning/units as setup_disc()'s return tuple
+                         (alpha is TOTAL alpha, dimensionless)
+        'run_config'  -- deep copy of config with the solved value written in
+                         (and 'SS' replaced by the numeric alpha) plus a
+                         'calibration_result' block; use it for the rest of the run
+        'info'        -- dict summarising the solve (also stored in run_config)
+    """
+    calib = config['calibration']
+    name = calib['solve_for']
+    if name not in _SOLVABLE_PARAMS:
+        raise ValueError(f"calibration.solve_for must be one of {list(_SOLVABLE_PARAMS)}, got {name!r}")
+    section, key, scale, (lo, hi) = _SOLVABLE_PARAMS[name]
+    if name == "Rd" and hi is None:
+        hi = float(grid.Rc[-1])                                  # AU, outermost cell centre
+    if calib.get('bracket') is not None:
+        lo, hi = (float(v) for v in calib['bracket'])            # parameter's own units
+    rtol = float(calib.get('rtol', 1e-6))                        # dimensionless, on Mdot
+    n_scan = int(calib.get('n_scan', 31))
+    Mdot_target = config['disc']['Mdot']                         # Msun / yr
+
+    # ---- full parameter set at the config values (units as in evaluate_initial_disc) ----
+    p = {
+        'alpha':  config['disc']['alpha'],    # total alpha (may be 'SS' only if solving for alpha)
+        'M':      config['disc']['M'],        # Msun
+        'Rd':     config['disc']['Rd'],       # AU
+        'gamma':  config['disc']['gamma'],    # dimensionless
+        'psi_DW': config['winds']['psi_DW'],  # dimensionless
+        'e_rad':  config['winds']['e_rad'],   # dimensionless
+    }
+
+    # ---- initial guess for the free parameter (used only to choose among roots) ----
+    guess = p[name]
+    guess_mode = 'config'
+    if name == 'alpha' and guess == 'SS':
+        guess = steady_state_alpha_guess(grid, star, config, kappa)   # total alpha, dimensionless
+        guess_mode = 'SS'
+    # ---- (Hof) which alpha is held fixed while solving for psi_DW ----
+    #   hold = 'alpha'    : total alpha p['alpha'] fixed (must be requested explicitly for psi_DW)
+    #   hold = 'alpha_SS' : viscous alpha fixed at alpha_SS_fixed (dimensionless); the total
+    #                       alpha passed to evaluate_initial_disc is alpha_SS_fixed (1 + psi)
+    # (Hof, 2026-09-30) DEFAULT CHANGED (same as run_model_Hof.py): when solving for psi_DW
+    # the default is now hold = 'alpha_SS' (viscous alpha fixed, well-conditioned; see case
+    # (b) above _SOLVABLE_PARAMS). The TOTAL alpha is held fixed only if the config says so
+    # explicitly with "hold": "alpha" in the calibration section. For every other
+    # solve_for the default stays 'alpha' (hold = 'alpha_SS' is not valid there).
+    hold_default = 'alpha_SS' if name == 'psi_DW' else 'alpha'
+    hold = calib.get('hold', hold_default)
+    hold_src = 'calibration.hold' if 'hold' in calib else 'default'   # for the printed message below
+    if hold not in ('alpha', 'alpha_SS'):
+        raise ValueError(f"calibration.hold must be 'alpha' or 'alpha_SS', got {hold!r}")
+    if name != 'psi_DW' and (hold != 'alpha' or 'alpha_SS' in calib):
+        raise ValueError(f"calibration.hold = 'alpha_SS' / calibration.alpha_SS are only valid with "
+                         f"solve_for = 'psi_DW' (got solve_for = {name!r}).")
+    if hold == 'alpha' and 'alpha_SS' in calib:
+        raise ValueError("calibration.alpha_SS given but calibration.hold is not 'alpha_SS'; "
+                         "set \"hold\": \"alpha_SS\" to hold the viscous alpha fixed.")
+    hold_SS = (hold == 'alpha_SS')
+    alpha_SS_fixed = np.nan                                      # dimensionless; NaN = not used
+    if hold_SS:
+        if calib.get('alpha_SS') is not None:
+            alpha_SS_fixed = float(calib['alpha_SS'])            # dimensionless, given explicitly
+            alpha_SS_src = 'calibration.alpha_SS'
+        else:
+            # default: the turbulence the config implies, alpha_SS = alpha_tot / (1 + psi_cfg)
+            alpha_tot_cfg = p['alpha']                           # total alpha, dimensionless
+            if alpha_tot_cfg == 'SS':
+                alpha_tot_cfg = steady_state_alpha_guess(grid, star, config, kappa)
+            alpha_SS_fixed = float(alpha_tot_cfg) / (1 + float(p['psi_DW']))
+            alpha_SS_src = f"disc.alpha / (1 + psi_DW) = {float(alpha_tot_cfg):.4g} / (1 + {float(p['psi_DW']):.4g})"
+        if not alpha_SS_fixed > 0:
+            raise ValueError(f"calibration: fixed alpha_SS must be > 0, got {alpha_SS_fixed}")
+        # (Hof, 2026-09-30) also say whether hold = 'alpha_SS' was chosen by default or explicitly
+        print(f"Calibration: holding alpha_SS = {alpha_SS_fixed:.4e} (dimensionless) fixed "
+              f"[hold = 'alpha_SS' from {hold_src}; alpha_SS from {alpha_SS_src}]; "
+              f"total alpha = alpha_SS (1 + psi) varies with psi. "
+              f"Set \"hold\": \"alpha\" in the calibration section to hold the TOTAL alpha instead.")
+    elif name == 'psi_DW':
+        # (Hof, 2026-09-30) total alpha held fixed only on explicit request ("hold": "alpha")
+        # (p['alpha'] printed as-is: a non-numeric 'SS' is rejected with a clear error just below)
+        print(f"Calibration: holding TOTAL alpha = {p['alpha']} (dimensionless) fixed "
+              f"[hold = 'alpha' from calibration.hold]; alpha_SS = alpha / (1 + psi) varies with psi.")
+
+    for k, v in p.items():
+        if hold_SS and k == 'alpha':
+            continue          # (Hof) total alpha is derived from alpha_SS_fixed, not used as a fixed input
+        if k != name and isinstance(v, str):
+            raise ValueError(f"Fixed parameter {k!r} must be numeric when solving for {name!r} "
+                             f"(got {v!r}); 'SS' is only allowed for alpha when solve_for = 'alpha'.")
+    guess = float(guess)
+
+    def params_at(v):
+        """(Hof) Full parameter set with the free parameter = v (its own units). With
+        hold = 'alpha_SS' the total alpha is recomputed as alpha_SS_fixed (1 + psi), so
+        evaluate_initial_disc's alpha_SS = alpha / (1 + psi) equals alpha_SS_fixed exactly."""
+        q = dict(p)
+        q[name] = float(v)
+        if hold_SS:
+            q['alpha'] = alpha_SS_fixed * (1 + float(v))          # total alpha, dimensionless
+        return q
+
+    # ---- map parameter value <-> search variable x ----
+    if scale == 'log':
+        if lo <= 0:
+            raise ValueError(f"bracket for log-scaled {name!r} must be > 0, got {[lo, hi]}")
+        to_x, from_x = np.log10, (lambda x: 10.0 ** x)
+    else:
+        to_x, from_x = (lambda v: v), (lambda x: x)
+
+    n_evals = [0]   # mutable counter of forward-model evaluations (list so g() can modify it)
+
+    def g(x):
+        """log10(Mdot / Mdot_target) with the free parameter set to from_x(x); nan if Mdot <= 0."""
+        q = params_at(from_x(x))      # (Hof) was dict(p) + q[name] = ...; now also handles hold = 'alpha_SS'
+        n_evals[0] += 1
+        Mdot = evaluate_initial_disc(grid, star, q, config['eos'], kappa)['Mdot']   # Msun / yr
+        if not np.isfinite(Mdot) or Mdot <= 0:
+            return np.nan
+        return np.log10(Mdot / Mdot_target)
+
+    def g_safe(x):
+        """g(x), but nan instead of an exception. At extreme parameter values (e.g. very
+        small Rd -> huge Sigma at R_in) the EOS's own temperature solve can fail to
+        converge; during the scan such points are just treated as unusable."""
+        try:
+            return g(x)
+        except (RuntimeError, ValueError, FloatingPointError, ZeroDivisionError):
+            return np.nan
+
+    # ---- 1. coarse scan ----
+    # np.errstate silences the numpy overflow/divide warnings the EOS emits at extreme
+    # parameter values during the scan (those points just come back nan / far from 0).
+    xs = np.linspace(to_x(lo), to_x(hi), n_scan)
+    with np.errstate(all='ignore'):
+        gs = np.array([g_safe(x) for x in xs])
+    ok = np.isfinite(gs)
+    if not ok.any():
+        raise RuntimeError(f"calibration: Mdot was non-positive/non-finite for every {name} in [{lo:.4g}, {hi:.4g}]")
+    # Mdot insensitive to the parameter (g flat to rounding): no meaningful root exists.
+    # This happens e.g. for e_rad when the inner cells sit at the Tmax cap (T = Tmax there
+    # whatever the heating), since Mdot is measured at the inner cell R_c[0].
+    if np.nanmax(gs) - np.nanmin(gs) < 1e-10:
+        raise RuntimeError(
+            f"calibration: Mdot at R_c[0] does not depend on {name} over [{lo:.4g}, {hi:.4g}] "
+            f"(Mdot = {Mdot_target * 10 ** np.nanmean(gs):.4e} Msun/yr everywhere; e.g. inner "
+            f"cells at the Tmax = {config['eos'].get('Tmax')} K cap make Mdot independent of e_rad). "
+            f"Solve for a different parameter."
+        )
+    # Candidate roots:
+    #   - scan points where g is exactly 0 (the scan hit the root itself), and
+    #   - intervals [xs[i], xs[i+1]] where g strictly changes sign.
+    # (Kept separate so an exact zero on a scan point is not double-counted as two
+    #  adjacent sign changes.)
+    # "exactly 0" is |g| < 1e-12 in log10(Mdot ratio), i.e. Mdot equal to ~2e-12 relative.
+    exact = [i for i in range(n_scan) if ok[i] and abs(gs[i]) < 1e-12]
+    # Several scan points ALL reproducing the target means Mdot is flat (plateau) in this
+    # parameter around the target: every value there works, so the solve is not meaningful.
+    # (e.g. e_rad with the inner cells at the Tmax cap: g = 0 for every e_rad > 0.)
+    if len(exact) > 1:
+        raise RuntimeError(
+            f"calibration: {len(exact)} scan values of {name} between {from_x(xs[exact[0]]):.4g} and "
+            f"{from_x(xs[exact[-1]]):.4g} ALL give Mdot = {Mdot_target:.3e} Msun/yr: Mdot at R_c[0] is "
+            f"insensitive to {name} here (e.g. inner cells at the Tmax = {config['eos'].get('Tmax')} K cap), "
+            f"so {name} is not constrained by Mdot. Solve for a different parameter."
+        )
+    idx = [i for i in range(n_scan - 1) if ok[i] and ok[i + 1] and gs[i] * gs[i + 1] < 0]
+    if not idx and not exact:
+        Mdot_min = Mdot_target * 10 ** np.nanmin(gs)            # Msun / yr
+        Mdot_max = Mdot_target * 10 ** np.nanmax(gs)            # Msun / yr
+        raise RuntimeError(
+            f"calibration: no {name} in [{lo:.4g}, {hi:.4g}] gives Mdot = {Mdot_target:.3e} Msun/yr "
+            f"with the other parameters fixed. Reachable range: [{Mdot_min:.3e}, {Mdot_max:.3e}] Msun/yr. "
+            f"Widen calibration.bracket, or change another parameter."
+        )
+
+    # ---- 2. choose the candidate root closest to the guess ----
+    # Each candidate: (approximate x location, 'exact' scan point index or 'interval' index)
+    x_guess = to_x(guess) if (scale == 'linear' or guess > 0) else 0.5 * (xs[0] + xs[-1])
+    cands = [(xs[j], 'exact', j) for j in exact] + \
+            [(0.5 * (xs[j] + xs[j + 1]), 'interval', j) for j in idx]
+    cands.sort(key=lambda c: c[0])
+    x_c, kind, j = min(cands, key=lambda c: abs(c[0] - x_guess))
+    n_roots = len(cands)
+    if n_roots > 1:
+        approx = ", ".join(f"{from_x(c[0]):.4g}" for c in cands)
+        print(f"WARNING calibration: Mdot is not monotonic in {name}; {n_roots} roots near "
+              f"[{approx}]. Using the one closest to the guess {guess:.4g}.")
+
+    # ---- 3. Brent's method inside that interval (x tolerance is in log10 or linear units) ----
+    if kind == 'exact':
+        x_root = xs[j]                                           # scan landed exactly on the root
+    else:
+        with np.errstate(all='ignore'):
+            x_root = scipy_brentq(g, xs[j], xs[j + 1], xtol=1e-12, maxiter=200)
+    value = float(from_x(x_root))                                # parameter's own units
+
+    # ---- 4. rebuild the disc at the root and check the residual ----
+    q = params_at(value)              # (Hof) consistent total alpha at the root when hold = 'alpha_SS'
+    res = evaluate_initial_disc(grid, star, q, config['eos'], kappa)
+    relerr = abs(res['Mdot'] / Mdot_target - 1)                  # dimensionless
+    if relerr > rtol:
+        raise RuntimeError(f"calibration: Brent converged to {name} = {value:.6g} but "
+                           f"|Mdot/Mdot_target - 1| = {relerr:.2e} > rtol = {rtol:.1e} "
+                           f"(Mdot may be discontinuous in {name} here).")
+
+    info = {
+        'solve_for': name,
+        'guess': guess,                         # parameter's own units
+        'guess_mode': guess_mode,               # 'SS' or 'config'
+        'value': value,                         # solved value, parameter's own units
+        'Mdot_target': float(Mdot_target),      # Msun / yr
+        'Mdot': res['Mdot'],                    # Msun / yr, achieved
+        'Mdot_relerr': float(relerr),           # dimensionless
+        'n_evals': int(n_evals[0] + 1),         # forward-model evaluations (scan + Brent + final rebuild)
+        'n_roots': n_roots,                     # number of candidate roots found in the scan (>1: non-monotonic)
+        'hold': hold,                           # (Hof) 'alpha' (total alpha fixed) or 'alpha_SS' (viscous alpha fixed)
+        'alpha_SS_fixed': float(alpha_SS_fixed),  # (Hof) dimensionless; NaN when hold = 'alpha'
+    }
+    print(f"Calibration: {name} = {value:.6g} (guess {guess:.4g}) -> Mdot = {res['Mdot']:.4e} Msun/yr "
+          f"(rel. err {relerr:.1e}, {info['n_evals']} evaluations)")
+
+    # ---- config copy for the rest of the run, with the solved value written in ----
+    run_config = copy.deepcopy(config)
+    run_config[section][key] = value
+    run_config['disc']['alpha'] = float(q['alpha'])   # numeric total alpha (replaces 'SS' if it was used)
+    run_config['calibration_result'] = info           # ends up in the logged config json
+
+    return {'disc': res['disc'], 'eos': res['eos'], 'Sigma': res['Sigma'],
+            'alpha': float(q['alpha']), 'alpha_SS': res['alpha_SS'],
+            'lambda_DW': res['lambda_DW'], 'run_config': run_config, 'info': info}
+
+
+# ============================================================================
 # Step 2: time grid
 # ============================================================================
 
@@ -340,7 +909,7 @@ def build_transport(transport_params, wind_params, disc_params, dust_growth_para
     gas = None
     if transport_params['gas_transport']:
         if wind_params["on"]:
-            gas = HybridWindModel(wind_params['psi_DW'], lambda_DW)
+            gas = HybridWindModel(wind_params['psi_DW'], lambda_DW, boundary = 'Mdot_inn')
         else:
             gas = GAS_SOLVER()
 
@@ -826,6 +1395,25 @@ def log_config(config, outfile, output_dir):
 # Main driver
 # ============================================================================
 
+def _build_grid_star_kappa(config):
+    """
+    (Hof) Grid, star and opacity function from the config -- the exact code that used
+    to be inline in step 2 of run_model(), moved here so the optional calibration
+    block at the top of run_model() can build them before the output filename is known.
+
+    Returns grid (radii in AU), star (M in Msun, R in Rsun, T_eff in K) and kappa
+    (opacity function, cm^2/g; unknown names fall back to Zhu2012 as before).
+    """
+    grid_params = config['grid']
+    star_params = config['star']
+    grid = Grid(grid_params['rmin'], grid_params['rmax'], grid_params['nr'],
+                spacing=grid_params['spacing'])
+    star = SimpleStar(M=star_params["M"], R=star_params["R"], T_eff=star_params['T_eff'])
+    opacity_tables = {"Tazzari": Tazzari2016, "Zhu2012": Zhu2012}
+    kappa = opacity_tables.get(config['eos']["opacity"], Zhu2012)
+    return grid, star, kappa
+
+
 def run_model(config, cli_output_dir=None):
     """
     Run one disc-evolution simulation from start to finish and stream the
@@ -840,6 +1428,24 @@ def run_model(config, cli_output_dir=None):
         Output directory, highest priority (beats $DISCEVOLUTION_OUTPUT
         and config['simulation']['output_dir']).
     """
+    # ---- (Hof) optional generic calibration: solve for ONE parameter FIRST ----
+    # (Ported verbatim from run_model_Hof.py -- see that file / LOG OF CHANGES.)
+    # If config has a "calibration" section, solve_initial_disc() root-finds the
+    # parameter named in calibration.solve_for (alpha, M, Rd, gamma, psi_DW or e_rad)
+    # so the initial disc gives config['disc']['Mdot'] (Msun/yr).
+    # This has to happen BEFORE the output filename / skip check below, because the
+    # solved psi_DW / e_rad / M / Rd appear in the filename. From here on `config` is
+    # the returned run_config (solved value written in, 'SS' replaced by the numeric
+    # alpha, plus a 'calibration_result' block), so every downstream consumer
+    # (filename, config log, build_transport's psi_DW, HDF5 attrs, _integrate) sees
+    # the solved value. Cost: ~n_scan + ~15 EOS solves, about a second.
+    # Without a "calibration" section `calib` stays None and nothing below changes.
+    calib = None
+    if config.get('calibration') is not None:
+        grid, star, kappa = _build_grid_star_kappa(config)
+        calib = solve_initial_disc(grid, star, config, kappa)
+        config = calib['run_config']
+
     grid_params = config['grid']
     sim_params = config['simulation']
     star_params = config['star']
@@ -876,16 +1482,24 @@ def run_model(config, cli_output_dir=None):
     log_config(config, outfile, output_dir)
 
     # ---- 2. grid + star ----
-    grid = Grid(grid_params['rmin'], grid_params['rmax'], grid_params['nr'],
-                spacing=grid_params['spacing'])
-    star = SimpleStar(M=star_params["M"], R=star_params["R"], T_eff=star_params['T_eff'])
+    # (Hof) grid/star/kappa construction moved into _build_grid_star_kappa() (same code)
+    # so the calibration block at the top of run_model() can build them early. When
+    # calibration ran, reuse ITS grid/star so the solved disc/EOS are tied to the same objects.
+    if calib is None:
+        grid, star, kappa = _build_grid_star_kappa(config)
     times = make_time_grid(sim_params)
 
-    opacity_tables = {"Tazzari": Tazzari2016, "Zhu2012": Zhu2012}
-    kappa = opacity_tables.get(eos_params["opacity"], Zhu2012)
-
     # ---- 3. solve for the initial disc structure ----
-    disc, eos, Sigma, alpha, alpha_SS, lambda_DW = setup_disc(grid, star, config, kappa)
+    if calib is not None:
+        # (Hof) generic calibration already solved the disc: just unpack it.
+        disc, eos, Sigma = calib['disc'], calib['eos'], calib['Sigma']
+        alpha, alpha_SS, lambda_DW = calib['alpha'], calib['alpha_SS'], calib['lambda_DW']   # dimensionless
+    else:
+        # Original path (unchanged): disc_setup's damped fixed-point alpha loop.
+        # NOTE: unlike run_model_Hof.py, this file's non-calibration path does NOT accept
+        # config['disc']['alpha'] = 'SS' (it must be a number); 'SS' works here only
+        # together with "calibration": {"solve_for": "alpha"}.
+        disc, eos, Sigma, alpha, alpha_SS, lambda_DW = setup_disc(grid, star, config, kappa)
 
     # Sanity check: outside this range the alpha-solve above is not
     # meaningful (either essentially inviscid, or so viscous the disc
@@ -915,6 +1529,25 @@ def run_model(config, cli_output_dir=None):
 
     # ---- 8. output file (path already computed in the skip-check above) ----
     h5f, groups = create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS)
+    # (Hof) generic-calibration record, same attrs as run_model_Hof.py: which parameter was
+    # solved, from what guess, to what value (all in that parameter's own units, see
+    # _SOLVABLE_PARAMS), and how well Mdot matches. (run_model_Hof.py's alpha_guess /
+    # alpha_guess_mode attrs are not written here: this file never had the 'SS' feature.)
+    h5f.attrs["alpha_solver"] = 'brentq' if calib is not None else 'damped_iteration'
+    if calib is not None:
+        info = calib['info']
+        h5f.attrs["calib_solve_for"] = info['solve_for']
+        h5f.attrs["calib_guess"] = info['guess']
+        h5f.attrs["calib_guess_mode"] = info['guess_mode']       # 'SS' or 'config'
+        h5f.attrs["calib_value"] = info['value']
+        h5f.attrs["calib_Mdot_target"] = info['Mdot_target']     # Msun / yr
+        h5f.attrs["calib_Mdot"] = info['Mdot']                   # Msun / yr, achieved at R_c[0]
+        h5f.attrs["calib_Mdot_relerr"] = info['Mdot_relerr']     # dimensionless
+        h5f.attrs["calib_n_evals"] = info['n_evals']
+        h5f.attrs["calib_n_roots"] = info['n_roots']
+        # (Hof) which alpha was held fixed during a psi_DW solve: 'alpha' (total) or 'alpha_SS' (viscous)
+        h5f.attrs["calib_hold"] = info['hold']
+        h5f.attrs["calib_alpha_SS_fixed"] = info['alpha_SS_fixed']   # dimensionless; NaN when calib_hold = 'alpha'
     try:
         _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, diffuse,
                    chemistry, times, config)
