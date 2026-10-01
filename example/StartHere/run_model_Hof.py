@@ -129,6 +129,12 @@ with one further addition -- see that file's own docstring.)
  t_visc_Rd_yr (yr), plus the usual calib_* attrs (calib_Mdot = achieved initial Mdot,
  Msun/yr; calib_Mdot_target = nominal disc.Mdot; calib_value / calib_guess = NaN);
  alpha_guess = the fixed total alpha and alpha_guess_mode = 'fixed' (as for any solve_for != alpha).
+-(2026-10-01) Output filename now includes gamma right after run_name:
+     <run_name>_gamma<gamma>_psi<psi_DW>_erad<e_rad>_Mdot<Mdot>_M<M>_Rd<Rd>.h5
+ (gamma = config['disc']['gamma'], dimensionless Sigma power-law index, written raw like
+ psi/erad). See output_filename(). Consequence: files written BEFORE this change have no
+ gamma token, so the skip-if-complete check will not recognise them and a re-launched
+ config re-runs instead of skipping.
 
 WHAT THIS RUNS
 --------------
@@ -1503,7 +1509,16 @@ def output_filename(config):
     disc_params = config['disc']
     wind_params = config['winds']
     run_name = sim_params.get('run_name', 'run')
-    return (f"{run_name}_psi{wind_params['psi_DW']}_erad{wind_params['e_rad']}_Mdot{disc_params['Mdot']:.1e}"
+    # (Hof, 2026-10-01) "_gamma{gamma}" token added right after run_name: gamma (the
+    # dimensionless Sigma power-law index, config['disc']['gamma']) is now part of the
+    # filename, so runs that differ ONLY in gamma no longer collide (previously the second
+    # one was skipped as "already complete"). Written raw like psi / erad (str(value):
+    # 1 -> "gamma1", 0.375 -> "gamma0.375"). Notebook filename regexes (psi, erad, _Mdot,
+    # _M, _Rd) are unaffected. To extract it, anchor on the following "_psi" (or "_dense_psi"),
+    # since a run_name may itself contain "gamma" (e.g. "hof_discwind_gamma0.375"):
+    #     re.search(r"_gamma([0-9.eE+-]+)(?:_dense)?_psi", name).group(1)
+    gamma = disc_params['gamma']                 # dimensionless
+    return (f"{run_name}_gamma{gamma}_psi{wind_params['psi_DW']}_erad{wind_params['e_rad']}_Mdot{disc_params['Mdot']:.1e}"
             f"_M{disc_params['M']:.1e}_Rd{disc_params['Rd']:.1e}.h5")
 
 
