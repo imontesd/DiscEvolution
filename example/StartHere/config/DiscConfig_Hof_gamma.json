@@ -13,7 +13,7 @@
     "T_eff": 4000
   },
   "simulation": {
-    "run_name": "hof_discwind_gamma0.375_boundary_Zero",
+    "run_name": "hof_discwind_gammatest_",
     "t_initial": 0,
     "t_final": 3000000.0,
     "t_interval": [
@@ -38,11 +38,14 @@
     "alpha": 0.00322259263116507,
     "M": 0.01,
     "d2g": 0.01,
-    "Mdot": 1e-07,
+    "Mdot": 1e-08,
     "Sc": 1.0,
     "Rd": 50,
     "gamma": 1
   },
+  "calibration":{
+        "solve_for": "none"
+    },
   "eos": {
     "type": "IrradiatedEOS",
     "opacity": "Zhu2012",
