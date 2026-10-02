@@ -41,7 +41,7 @@
     "Mdot": 1e-08,
     "Sc": 1.0,
     "Rd": 50,
-    "gamma": 1
+    "gamma": 0.375
   },
   "calibration":{
         "solve_for": "none"
