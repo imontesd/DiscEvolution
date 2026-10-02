@@ -15,7 +15,7 @@
     },
 
     "simulation": {
-        "run_name": "hof_solver_ben_comp",
+        "run_name": "hof_solver_psi_test1",
         "t_initial": 0,
         "t_final": 3000000.0,
         "t_interval": [0, 0.001, 0.01, 0.1, 0.2, 0.5, 1.0, 2.0, 3.0],
@@ -23,7 +23,7 @@
     },
 
     "disc": {
-        "alpha": 1e-5,
+        "alpha": 1e-4,
         "M": 0.1,
         "d2g": 0.01,
         "d2g_SI": 0.02,
@@ -34,7 +34,9 @@
     },
     "calibration":{
         "solve_for": "psi_DW",
-        "hold" : "alpha_SS"
+        "bracket": "(1e-3, 1e3)",
+        "rtol": 1e-4,
+        "n_scan": 30
     },
     "eos": {
         "type": "IrradiatedEOS",
@@ -70,7 +72,7 @@
     },
 
     "planets": {
-        "include_planets": false,
+        "include_planets": true,
         "planet_model": "Bitsch2015Model",
         "rho_core": 5.5,
         "Rp": [0.50, 0.63, 0.81, 1.03, 1.32, 1.68, 2.14, 2.73, 3.48, 4.23, 5.64, 7.19, 9.16, 11.7, 14.9, 19.0, 24.2, 30.8, 39.2, 50.0],
@@ -86,7 +88,7 @@
     },
 
     "planetesimal": {
-        "active": false,
+        "active": true,
         "diameter": "SI",
         "rho_pltsml": 2.0,
         "St_min": 0.01,
@@ -102,7 +104,7 @@
 
     "winds": {
         "on": true,
-        "psi_DW": 10,
+        "psi_DW": 15,
         "e_rad": 0.9
     }
 }
