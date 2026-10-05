@@ -34,9 +34,8 @@
     },
     "calibration":{
         "solve_for": "psi_DW",
-        "bracket": "(1e-3, 1e3)",
-        "rtol": 1e-4,
-        "n_scan": 30
+        "hold": "alpha_SS",
+        "alpha_SS": 1e-5
     },
     "eos": {
         "type": "IrradiatedEOS",
