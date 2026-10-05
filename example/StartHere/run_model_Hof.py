@@ -69,6 +69,8 @@ with one further addition -- see that file's own docstring.)
               recomputed at every trial psi)
    alpha_SS : the fixed viscous alpha, dimensionless. Optional; if omitted it is
               disc.alpha / (1 + winds.psi_DW) from the config ('SS' alpha resolved first).
+              [SUPERSEDED 2026-10-05: alpha_SS is now REQUIRED with hold = "alpha_SS";
+              see the 2026-10-05 entry below.]
  Why: at fixed TOTAL alpha, Mdot(R_c[0]) depends on psi only through the heating
  (bounded, <= x3), so psi is badly constrained by Mdot; at fixed alpha_SS, Mdot is
  ~proportional to (1 + psi). Derivation in the comment block above _SOLVABLE_PARAMS.
@@ -104,7 +106,8 @@ with one further addition -- see that file's own docstring.)
      "calibration": {"solve_for": "psi_DW", "hold": "alpha"}
  This supersedes the "default" stated in the 2026-09-28 entry above. With no
  calibration.alpha_SS given, the fixed value is still disc.alpha / (1 + winds.psi_DW)
- (dimensionless) from the config. For any other solve_for the default remains "alpha"
+ (dimensionless) from the config [SUPERSEDED 2026-10-05: no default any more, a missing
+ alpha_SS now raises ValueError]. For any other solve_for the default remains "alpha"
  and hold = "alpha_SS" is still rejected. The solver now prints which alpha is held
  and whether that came from the default or from calibration.hold.
 
@@ -146,6 +149,16 @@ with one further addition -- see that file's own docstring.)
  DiscEvolution.brent.brentq, scipy brentq, Grid, SimpleStar, Tazzari2016, Zhu2012).
  Wherever this docstring or the comments say "disc_setup.setup_disc", it is now
  disc_setup_Hof.setup_disc (identical code).
+-(2026-10-05) calibration.alpha_SS is now REQUIRED when solving for psi_DW with
+ hold = "alpha_SS" (the default hold for psi_DW), e.g.
+     "calibration": {"solve_for": "psi_DW", "alpha_SS": 1e-4}
+ The fallback alpha_SS = disc.alpha / (1 + winds.psi_DW) (dimensionless) was removed from
+ disc_setup_Hof.solve_initial_disc(); a missing alpha_SS now raises ValueError with
+ the fix. Why: winds.psi_DW is also the initial GUESS for psi, so the fallback made the
+ solved psi depend on the guess (notebooks/test_calibration_Hof.ipynb, section 3c).
+ The code change is in disc_setup_Hof.py (see its LOG OF CHANGES). In THIS file only
+ the "NOTE: no calibration section" key list printed by run_model() was updated
+ (alpha_SS: "REQUIRED with hold = 'alpha_SS' ... no default"). hold = "alpha" is unchanged.
 
 WHAT THIS RUNS
 --------------
@@ -820,8 +833,10 @@ def run_model(config, cli_output_dir=None):
               "        n_scan    (optional) : number of coarse-scan points across the bracket (default 31)\n"
               "        hold      (optional) : only with solve_for = 'psi_DW'; 'alpha_SS' (default, viscous alpha "
               "fixed) or 'alpha' (TOTAL alpha fixed, must be set explicitly)\n"
-              "        alpha_SS  (optional) : only with hold = 'alpha_SS'; fixed viscous alpha, dimensionless "
-              "(default disc.alpha / (1 + winds.psi_DW))")
+              # (Hof, 2026-10-05) alpha_SS is REQUIRED with hold = 'alpha_SS' (no default any more;
+              # the old one, disc.alpha / (1 + winds.psi_DW), depended on the psi guess)
+              "        alpha_SS  (REQUIRED with hold = 'alpha_SS', incl. the default hold for psi_DW) : "
+              "fixed viscous alpha, dimensionless; no default")
 
     grid_params = config['grid']
     sim_params = config['simulation']

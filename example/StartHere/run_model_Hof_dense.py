@@ -136,6 +136,7 @@ calibration keys, only valid with solve_for = "psi_DW":
   hold     : "alpha" (default, previous behaviour: total alpha = disc.alpha fixed)
              or "alpha_SS" (alpha_SS fixed; total alpha = alpha_SS (1 + psi) at each trial psi)
   alpha_SS : fixed viscous alpha, dimensionless; default disc.alpha / (1 + winds.psi_DW).
+             [SUPERSEDED 2026-10-05: no default, alpha_SS is REQUIRED with hold = "alpha_SS".]
 Why: at fixed total alpha Mdot(R_c[0]) depends on psi only through the (bounded, <= x3)
 heating, so psi is ill-conditioned; at fixed alpha_SS, Mdot ~ (1 + psi). Derivation in
 the comment block above _SOLVABLE_PARAMS. New info entries 'hold', 'alpha_SS_fixed';
@@ -148,7 +149,8 @@ fixed only if the config explicitly has
     "calibration": {"solve_for": "psi_DW", "hold": "alpha"}
 This supersedes the "default" stated in the 2026-09-28 entry above. With no
 calibration.alpha_SS given, the fixed value is still disc.alpha / (1 + winds.psi_DW)
-(dimensionless) from the config. For any other solve_for the default remains "alpha"
+(dimensionless) from the config [SUPERSEDED 2026-10-05: no default any more, a missing
+alpha_SS now raises ValueError]. For any other solve_for the default remains "alpha"
 and hold = "alpha_SS" is still rejected. The solver now prints which alpha is held
 and whether that came from the default or from calibration.hold.
 
@@ -196,6 +198,14 @@ and whether that came from the default or from calibration.hold.
  docstring says "disc_setup.setup_disc", it is now disc_setup_Hof.setup_disc (identical code).
  Imports no longer needed were removed (copy, Omega0, GasConst, sig_SB, AccretionDisc,
  DiscEvolution.brent.brentq, scipy brentq, Grid, SimpleStar, Tazzari2016, Zhu2012).
+-(2026-10-05) (via the shared disc_setup_Hof.py, no code change in THIS file)
+ calibration.alpha_SS is now REQUIRED when solving for psi_DW with hold = "alpha_SS"
+ (the default hold for psi_DW), e.g.
+     "calibration": {"solve_for": "psi_DW", "alpha_SS": 1e-4}
+ The fallback alpha_SS = disc.alpha / (1 + winds.psi_DW) (dimensionless) was removed; a
+ missing alpha_SS now raises ValueError with the fix. Why: winds.psi_DW is also the
+ initial GUESS for psi, so the fallback made the solved psi depend on the guess
+ (notebooks/test_calibration_Hof.ipynb, section 3c). hold = "alpha" is unchanged.
 
 WHAT THIS RUNS
 --------------
