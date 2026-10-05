@@ -65,6 +65,22 @@ LOG OF CHANGES (relative to disc_setup.py)
  see disc_setup.py for that text.
 -make_eos(), winds_alpha_disc(), _SETUP_FUNCS and setup_disc() are unchanged
  from disc_setup.py (kept for the no-"calibration" fallback path).
+-(2026-10-05) solve_initial_disc(): calibration.alpha_SS is now REQUIRED when
+ hold = 'alpha_SS', which is also the default hold for solve_for = 'psi_DW'. The
+ fallback alpha_SS = disc.alpha / (1 + winds.psi_DW) (dimensionless) was REMOVED and
+ replaced by a ValueError that explains why and how to fix the config (add
+ "alpha_SS": <value>, or "hold": "alpha"), quoting the removed default's value for
+ reference. Why: winds.psi_DW is also the solver's initial GUESS for psi, so the old
+ default made the fixed viscous alpha, and therefore the solved psi, depend on the
+ guess. The solve still converged and met the target Mdot, but to the root of a
+ different problem for each guess (notebooks/test_calibration_Hof.ipynb section 3c:
+ true psi = 0.01; guess 1 -> psi 2.02, guess 100 -> psi 203). With alpha_SS explicit,
+ all guesses across the bracket gave the true psi (same notebook, section 3a).
+ Unchanged: hold = 'alpha' (TOTAL alpha fixed) needs no alpha_SS; all other
+ solve_for values; the solved value whenever alpha_SS IS given; the returned 'info'
+ keys ('alpha_SS_fixed' is always the user's value now). Configs checked:
+ only config/DiscConfig_Hof_Ben.json solves for psi_DW, and it already sets
+ "alpha_SS": 1e-5, so no config needed changing.
 
 UNITS
 -----
@@ -397,7 +413,9 @@ def steady_state_alpha_guess(grid, star, config, kappa):
 #       delta ln psi = delta ln(Mdot/alpha_tot) / (d ln Mdot / d ln psi) ~ 20 x delta ln alpha
 #     -> psi is ill-conditioned: only a narrow window of alpha has a root at all, and
 #        the root moves a lot for small changes in alpha.
-# (b) alpha_SS fixed (hold = "alpha_SS", DEFAULT for solve_for = "psi_DW" since 2026-09-30):
+# (b) alpha_SS fixed (hold = "alpha_SS", DEFAULT for solve_for = "psi_DW" since 2026-09-30;
+#     since 2026-10-05 the fixed value calibration.alpha_SS MUST be given explicitly, there
+#     is no longer a default derived from the psi guess -- see solve_initial_disc()):
 #       Mdot ≈ 3 pi Sigma (c_s^2/Omega) alpha_SS (1 + psi)   -- psi multiplies Mdot directly,
 #     and the heating also grows with psi (same sign), so
 #       d ln Mdot / d ln psi ≈ psi/(1 + psi) + (small, positive)  -> ~1 for psi >~ 1:
@@ -638,9 +656,13 @@ def solve_initial_disc(grid, star, config, kappa):
                                    alpha = disc.alpha fixed; only if set explicitly).
                                    See the equations above _SOLVABLE_PARAMS for why
                                    'alpha_SS' is much better conditioned.
-    alpha_SS  : float, opt.     -- (Hof, only with hold = 'alpha_SS') the fixed viscous
-                                   alpha, dimensionless. Default: disc.alpha / (1 + psi_DW)
-                                   from the config.
+    alpha_SS  : float           -- (Hof, only with hold = 'alpha_SS') the fixed viscous
+                                   alpha, dimensionless. (Hof, 2026-10-05) REQUIRED with
+                                   hold = 'alpha_SS', i.e. also for solve_for = 'psi_DW'
+                                   with no "hold" key (the default hold). There is no
+                                   default any more: the old one, disc.alpha / (1 + psi_DW),
+                                   depended on the psi GUESS. A missing alpha_SS raises
+                                   ValueError. Not needed (and rejected) with hold = 'alpha'.
 
     The config value of the solved parameter is used ONLY as the initial
     guess (to pick a root if there are several). For 'alpha' it may be 'SS'
@@ -736,16 +758,42 @@ def solve_initial_disc(grid, star, config, kappa):
     hold_SS = (hold == 'alpha_SS')
     alpha_SS_fixed = np.nan                                      # dimensionless; NaN = not used
     if hold_SS:
-        if calib.get('alpha_SS') is not None:
-            alpha_SS_fixed = float(calib['alpha_SS'])            # dimensionless, given explicitly
-            alpha_SS_src = 'calibration.alpha_SS'
-        else:
-            # default: the turbulence the config implies, alpha_SS = alpha_tot / (1 + psi_cfg)
-            alpha_tot_cfg = p['alpha']                           # total alpha, dimensionless
-            if alpha_tot_cfg == 'SS':
-                alpha_tot_cfg = steady_state_alpha_guess(grid, star, config, kappa)
-            alpha_SS_fixed = float(alpha_tot_cfg) / (1 + float(p['psi_DW']))
-            alpha_SS_src = f"disc.alpha / (1 + psi_DW) = {float(alpha_tot_cfg):.4g} / (1 + {float(p['psi_DW']):.4g})"
+        # (Hof, 2026-10-05) alpha_SS is now REQUIRED whenever hold = 'alpha_SS' (which is
+        # also the DEFAULT hold for solve_for = 'psi_DW'). The old fallback
+        #     alpha_SS_fixed = disc.alpha / (1 + winds.psi_DW)        (dimensionless)
+        # was REMOVED: winds.psi_DW is also the INITIAL GUESS for psi, so that default made
+        # the viscous alpha being held fixed -- and therefore the solved psi -- depend on the
+        # guess. Brent still converged and met the target Mdot, but to the root of a
+        # DIFFERENT problem for every guess (test_calibration_Hof.ipynb, section 3c: with the
+        # sweep config, true psi = 0.01, a guess of 1 returned psi = 2.02 and a guess of 100
+        # returned psi = 203). With alpha_SS given explicitly, every guess across the whole
+        # bracket returned the true psi to machine precision (same notebook, section 3a).
+        if calib.get('alpha_SS') is None:
+            # For reference only: what the REMOVED default would have used (dimensionless),
+            # shown only if disc.alpha and winds.psi_DW are numeric. Not computed for
+            # disc.alpha = 'SS' (that would need steady_state_alpha_guess, and the value would
+            # still depend on the psi guess).
+            ref = ""
+            if not isinstance(p['alpha'], str) and not isinstance(p['psi_DW'], str):
+                old_default = float(p['alpha']) / (1 + float(p['psi_DW']))   # dimensionless
+                ref = (f"\n  For reference, the removed default would have been disc.alpha / (1 + winds.psi_DW) "
+                       f"= {float(p['alpha']):.4g} / (1 + {float(p['psi_DW']):.4g}) = {old_default:.4e} "
+                       f"(dimensionless). Use that value only if winds.psi_DW is the wind strength you "
+                       f"actually intend, not just a starting guess.")
+            raise ValueError(
+                f"calibration FAILED: solve_for = 'psi_DW' with hold = 'alpha_SS' (from {hold_src}) "
+                f"requires an explicit \"alpha_SS\" (the fixed VISCOUS alpha, dimensionless) in the "
+                f"calibration section.\n"
+                f"  It no longer defaults to disc.alpha / (1 + winds.psi_DW): winds.psi_DW is also the "
+                f"initial GUESS for psi, so that default made the fixed alpha_SS, and hence the solved "
+                f"psi, depend on the guess (see notebooks/test_calibration_Hof.ipynb, section 3c).\n"
+                f"  Fix: add e.g. \"alpha_SS\": 1e-4 to the calibration section, i.e.\n"
+                f"      \"calibration\": {{\"solve_for\": \"psi_DW\", \"alpha_SS\": 1e-4}}\n"
+                f"  or set \"hold\": \"alpha\" to hold the TOTAL alpha = disc.alpha fixed instead "
+                f"(ill-conditioned for psi; see the comment block above _SOLVABLE_PARAMS)." + ref
+            )
+        alpha_SS_fixed = float(calib['alpha_SS'])                # dimensionless, given explicitly
+        alpha_SS_src = 'calibration.alpha_SS'
         if not alpha_SS_fixed > 0:
             raise ValueError(f"calibration: fixed alpha_SS must be > 0, got {alpha_SS_fixed}")
         # (Hof, 2026-09-30) also say whether hold = 'alpha_SS' was chosen by default or explicitly

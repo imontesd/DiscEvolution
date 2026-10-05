@@ -34,7 +34,12 @@
     },
     "calibration":{
         "solve_for": "psi_DW",
+<<<<<<< HEAD
         "hold" : "alpha_SS"
+=======
+        "hold": "alpha_SS",
+        "alpha_SS": 1e-5
+>>>>>>> a6538e4ada692c4bc51f546269614f2fdcb483cb
     },
     "eos": {
         "type": "IrradiatedEOS",
