@@ -159,6 +159,17 @@ with one further addition -- see that file's own docstring.)
  The code change is in disc_setup_Hof.py (see its LOG OF CHANGES). In THIS file only
  the "NOTE: no calibration section" key list printed by run_model() was updated
  (alpha_SS: "REQUIRED with hold = 'alpha_SS' ... no default"). hold = "alpha" is unchanged.
+-(2026-10-06) Run start/end wall-clock timestamps are saved as HDF5 file attributes
+ "run_start" and "run_end" (ISO 8601 strings, local time, to the second, e.g.
+ "2026-10-06T14:03:12"). run_start is taken at the very top of run_model(), so the
+ run duration run_end - run_start INCLUDES the calibration solve and disc setup, not
+ just the time-stepping loop. Both are written in run_model()'s final `finally:` block,
+ right before the file is closed (so they are present even if _integrate() raised).
+ A short summary (output file, start, end, duration in h:m:s) is printed right after
+ the file is closed, so it is the last thing in the terminal for a successful run
+ (for a failed run Python's traceback follows it). Read back by load_data() in the
+ Hof_figures_*.ipynb notebooks as data["run_start"] / data["run_end"] (datetime or None).
+ Why: the run duration could previously only be estimated from file-system timestamps.
 
 WHAT THIS RUNS
 --------------
@@ -789,6 +800,13 @@ def run_model(config, cli_output_dir=None):
         Output directory, highest priority (beats $DISCEVOLUTION_OUTPUT
         and config['simulation']['output_dir']).
     """
+    # (Hof, 2026-10-06) Wall-clock start of this run (local time). Taken FIRST, so the
+    # duration run_end - run_start includes the calibration solve and setup as well as
+    # the time-stepping loop. Saved as HDF5 attr "run_start" at the end of run_model().
+    # Truncated to whole seconds so the printed duration exactly equals run_end - run_start
+    # as stored in the file (and as recomputed from load_data()).
+    run_start = datetime.now().replace(microsecond=0)
+
     # ---- (Hof) optional generic calibration: solve for ONE parameter FIRST ----
     # If config has a "calibration" section, solve_initial_disc() root-finds the
     # parameter named in calibration.solve_for (alpha, M, Rd, gamma, psi_DW or e_rad)
@@ -972,7 +990,23 @@ def run_model(config, cli_output_dir=None):
                    chemistry, times, config)
     finally:
         h5f.attrs["complete"] = True
+        # (Hof, 2026-10-06) wall-clock start/end of the run, ISO 8601 local time to the
+        # second (e.g. "2026-10-06T14:03:12"); duration = run_end - run_start, which
+        # includes calibration + setup (run_start is taken at the top of run_model()).
+        run_end = datetime.now().replace(microsecond=0)                   # whole seconds, like run_start
+        h5f.attrs["run_start"] = run_start.isoformat(timespec="seconds")
+        h5f.attrs["run_end"] = run_end.isoformat(timespec="seconds")
         h5f.close()
+        # (Hof, 2026-10-06) Run summary, printed AFTER the file is closed so it is the
+        # last output of a successful run (if _integrate() raised, the traceback follows).
+        run_seconds = int((run_end - run_start).total_seconds())          # [s], wall clock
+        print("\n" + "=" * 70)
+        print(f"Run finished: {os.path.basename(outfile)}")
+        print(f"  start    : {run_start.isoformat(sep=' ', timespec='seconds')}")
+        print(f"  end      : {run_end.isoformat(sep=' ', timespec='seconds')}")
+        print(f"  duration : {run_seconds // 3600:d}:{(run_seconds % 3600) // 60:02d}:{run_seconds % 60:02d}"
+              f" (h:mm:ss, incl. calibration + setup)")
+        print("=" * 70, flush=True)
 
 
 def _disc_star_mdot(disc):
