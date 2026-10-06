@@ -3,7 +3,7 @@
     "rmin": 0.1,
     "rmax": 1000,
     "nr": 1000,
-    "spacing": 0.25,
+    "spacing": "linear",
     "smart_binning": false,
     "type": "winds-alpha"
   },
