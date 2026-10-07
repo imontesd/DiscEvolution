@@ -1,4 +1,12 @@
 #!/bin/bash
+#SBATCH --account=def-mbalogh
+#SBATCH --time=0-00:10:00            # adjust to the expected runtime
+#SBATCH --cpus-per-task=1            # must equal NPROC below
+#SBATCH --mem-per-cpu=4G
+#SBATCH --job-name=hof_popsynthtest
+#SBATCH --output=%x_%j.out           # this script's own echo output
+#SBATCH --mail-user=imontesdeocahof@gmail.com
+#SBATCH --mail-type=END,FAIL
 #
 # run_popsynth_student.sh
 # ------------------------
@@ -25,18 +33,20 @@ set -euo pipefail
 # 1. Parameter grid. Edit these four lines to change what gets run.
 # ---------------------------------------------------------------------------
 PSI_VALUES="10"
-MDOT_VALUES="1e-9 3e-9 1e-8 3e-8 1e-7 3e-7"
-M_VALUES="0.05 0.075 0.1 0.125 0.15"
-RD_VALUES="50 100 150 200"
+MDOT_VALUES="1e-8"
+M_VALUES="0.01"
+RD_VALUES="50"
 
 # ---------------------------------------------------------------------------
 # 2. Config file, where output/logs go, and how many runs at once.
 # ---------------------------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config/DiscConfig_default.json"
-OUTDIR="${DISCEVOLUTION_OUTPUT:-$SCRIPT_DIR/output}"
-LOGDIR="$SCRIPT_DIR/logs"
-NPROC=8
+SCRIPT_DIR="/home/imontesd/projects/def-mbalogh/imontesd/DiscEvolution/example/StartHere"
+
+CONFIG_FILE="$SCRIPT_DIR/config/popsynth/DiscConfig_Hof_popsynthtest.json"
+
+OUTDIR="/project/def-mbalogh/imontesd/output/DiscEvolution/popsynth/test"
+LOGDIR="/project/def-mbalogh/imontesd/output/DiscEvolution/logs"
+NPROC=1
 
 mkdir -p "$LOGDIR" "$OUTDIR"
 
