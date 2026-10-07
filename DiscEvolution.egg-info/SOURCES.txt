@@ -59,6 +59,8 @@ scripts/plot_planet_M-R.py
 scripts/plot_planet_R-t.py
 scripts/plot_planet_evo.py
 scripts/plot_planets.py
+scripts/run_model_tobin.py
+scripts/run_model_tobin_stream.py
 scripts/snap_reader.py
 tests/test_atomic_data.py
 tests/test_io.py
