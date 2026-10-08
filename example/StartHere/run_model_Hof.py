@@ -195,6 +195,10 @@ with one further addition -- see that file's own docstring.)
  HDF5 attrs already written for every calibrated run now carry the mode: calib_hold =
  'alpha_SS' and calib_alpha_SS_fixed = the fixed value; alpha_SS and alpha_total as before.
  run_model_Hof_dense.py has its own output_filename() and NO --alpha_SS flag (unchanged).
+-(2026-10-08) New CLI flag --e_rad <value> (dimensionless, 0-1) overriding winds.e_rad, for
+ e_rad sweeps in run_popsynth_Hof.sh. e_rad was already part of the filename ("_erad"), so
+ runs differing only in e_rad get distinct files. It enters lambda_DW = 1/(2(1-e_rad)(3/psi+1)) + 1
+ (e_rad = 1 or psi = 0 -> lambda_DW = inf: no wind mass loss).
 
 WHAT THIS RUNS
 --------------
@@ -1289,6 +1293,9 @@ Examples:
     parser.add_argument("--alpha_SS", type=float, default=None,
                         help="Override calibration.alpha_SS (fixed viscous alpha, dimensionless; "
                              "needs calibration hold = 'alpha_SS')")
+    # (Hof, 2026-10-08) wind radiative-loss efficiency, for e_rad sweeps in run_popsynth_Hof.sh
+    parser.add_argument("--e_rad", type=float, default=None,
+                        help="Override winds.e_rad (fraction of accretion heating radiated, dimensionless, 0-1)")
 
     args = parser.parse_args()
 
@@ -1304,6 +1311,7 @@ Examples:
         ("disc", "Mdot"): args.Mdot,
         ("disc", "M"): args.M,
         ("disc", "Rd"): args.Rd,
+        ("winds", "e_rad"): args.e_rad,     # (Hof, 2026-10-08) dimensionless; in the filename as "_erad"
     }
     for (section, key), value in overrides.items():
         if value is not None:
