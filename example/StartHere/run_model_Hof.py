@@ -182,6 +182,19 @@ with one further addition -- see that file's own docstring.)
  notebooks' load_data() recognises the flag (data["Mdot_out_of_range"] = True) and such
  runs are not plotted. Placed right after log_config(), so the attempt is still logged.
  run_model_Hof_dense.py does NOT have this check (it would evolve the disc anyway).
+-(2026-10-08) Fixed VISCOUS alpha in no-solve mode, for sweeps over psi_DW / alpha_SS:
+     "calibration": {"solve_for": "none", "hold": "alpha_SS", "alpha_SS": 1e-4}
+ makes disc_setup_Hof._fixed_initial_disc() use TOTAL alpha = alpha_SS (1 + psi_DW)
+ (dimensionless) per run (see disc_setup_Hof.py's LOG OF CHANGES). In THIS file:
+   * new CLI flag --alpha_SS <value> (dimensionless) overriding calibration.alpha_SS
+     (exits with an error if the config has no "calibration" section);
+   * output_filename(): new "_aSS{alpha_SS:.1e}" token after "_erad{e_rad}", ONLY in this
+     mode (e.g. "..._psi10_erad0.9_aSS1.0e-04_Mdot1.0e-08_..."), so runs differing only in
+     alpha_SS no longer collide. All other filenames are unchanged;
+   * the "NOTE: no calibration section" help text mentions hold for solve_for = 'none'.
+ HDF5 attrs already written for every calibrated run now carry the mode: calib_hold =
+ 'alpha_SS' and calib_alpha_SS_fixed = the fixed value; alpha_SS and alpha_total as before.
+ run_model_Hof_dense.py has its own output_filename() and NO --alpha_SS flag (unchanged).
 
 WHAT THIS RUNS
 --------------
@@ -599,6 +612,10 @@ def write_not_run_file(outfile, config, calib, run_start):
         h5f.attrs["alpha_solver"] = 'none'
         h5f.attrs["alpha_total"] = float(calib['alpha'])                    # dimensionless
         h5f.attrs["alpha_SS"] = float(calib['alpha_SS'])                    # dimensionless
+        # (Hof, 2026-10-08) which alpha was held fixed ('alpha' = TOTAL, 'alpha_SS' = viscous) and
+        # the fixed viscous value (dimensionless; NaN when calib_hold = 'alpha'), as for a normal run
+        h5f.attrs["calib_hold"] = info['hold']
+        h5f.attrs["calib_alpha_SS_fixed"] = float(info['alpha_SS_fixed'])
         h5f.attrs["run_start"] = run_start.isoformat(timespec="seconds")
         h5f.attrs["run_end"] = datetime.now().replace(microsecond=0).isoformat(timespec="seconds")
         h5f.attrs["config_json"] = json.dumps(config, default=str)
@@ -768,8 +785,18 @@ def output_filename(config):
     # since a run_name may itself contain "gamma" (e.g. "hof_discwind_gamma0.375"):
     #     re.search(r"_gamma([0-9.eE+-]+)(?:_dense)?_psi", name).group(1)
     gamma = disc_params['gamma']                 # dimensionless
-    return (f"{run_name}_gamma{gamma}_psi{wind_params['psi_DW']}_erad{wind_params['e_rad']}_Mdot{disc_params['Mdot']:.1e}"
-            f"_M{disc_params['M']:.1e}_Rd{disc_params['Rd']:.1e}.h5")
+    # (Hof, 2026-10-08) "_aSS{alpha_SS:.1e}" token right after "_erad...", ONLY when the
+    # viscous alpha is fixed in no-solve mode (calibration solve_for = 'none', hold = 'alpha_SS',
+    # e.g. swept with --alpha_SS): alpha is not otherwise in the filename, so runs differing only
+    # in alpha_SS would collide (the second skipped as "already complete"). Filenames of every
+    # other mode are UNCHANGED. Notebook regexes for psi / erad / gamma / _Mdot / _M are unaffected;
+    # to extract it:  re.search(r"_aSS([0-9.eE+-]+?)_Mdot", name).group(1)   [dimensionless]
+    calib_params = config.get('calibration') or {}
+    aSS_token = ""
+    if calib_params.get('solve_for') == 'none' and calib_params.get('hold') == 'alpha_SS':
+        aSS_token = f"_aSS{float(calib_params['alpha_SS']):.1e}"
+    return (f"{run_name}_gamma{gamma}_psi{wind_params['psi_DW']}_erad{wind_params['e_rad']}{aSS_token}"
+            f"_Mdot{disc_params['Mdot']:.1e}_M{disc_params['M']:.1e}_Rd{disc_params['Rd']:.1e}.h5")
 
 
 # ============================================================================
@@ -901,6 +928,9 @@ def run_model(config, cli_output_dir=None):
               "        n_scan    (optional) : number of coarse-scan points across the bracket (default 31)\n"
               "        hold      (optional) : only with solve_for = 'psi_DW'; 'alpha_SS' (default, viscous alpha "
               "fixed) or 'alpha' (TOTAL alpha fixed, must be set explicitly)\n"
+              # (Hof, 2026-10-08) hold = 'alpha_SS' also allowed with solve_for = 'none'
+              "                               also with solve_for = 'none': 'alpha' (default, TOTAL alpha = "
+              "disc.alpha) or 'alpha_SS' (TOTAL alpha = alpha_SS (1 + psi_DW), per run)\n"
               # (Hof, 2026-10-05) alpha_SS is REQUIRED with hold = 'alpha_SS' (no default any more;
               # the old one, disc.alpha / (1 + winds.psi_DW), depended on the psi guess)
               "        alpha_SS  (REQUIRED with hold = 'alpha_SS', incl. the default hold for psi_DW) : "
@@ -1254,6 +1284,11 @@ Examples:
     parser.add_argument("--M", type=float, default=None, help="Override disc mass [Msun]")
     parser.add_argument("--Rd", type=float, default=None, help="Override characteristic disc radius [AU]")
     parser.add_argument("--output_dir", type=str, default=None, help="Override output directory")
+    # (Hof, 2026-10-08) fixed VISCOUS alpha for calibration solve_for = 'none' + hold = 'alpha_SS'
+    # (TOTAL alpha = alpha_SS (1 + psi_DW) per run); used by run_popsynth_Hof.sh's ALPHA_SS_VALUES
+    parser.add_argument("--alpha_SS", type=float, default=None,
+                        help="Override calibration.alpha_SS (fixed viscous alpha, dimensionless; "
+                             "needs calibration hold = 'alpha_SS')")
 
     args = parser.parse_args()
 
@@ -1274,5 +1309,15 @@ Examples:
         if value is not None:
             config[section][key] = value
             print(f"Overriding {section}.{key}: {value}")
+    # (Hof, 2026-10-08) --alpha_SS -> calibration.alpha_SS. Kept separate from `overrides`
+    # because the "calibration" section may be absent; then there is nothing to override.
+    if args.alpha_SS is not None:
+        if config.get('calibration') is None:
+            print("ERROR: --alpha_SS given but the config has no \"calibration\" section; add e.g.\n"
+                  "  \"calibration\": {\"solve_for\": \"none\", \"hold\": \"alpha_SS\", \"alpha_SS\": 1e-4}",
+                  file=sys.stderr)
+            sys.exit(1)
+        config['calibration']['alpha_SS'] = args.alpha_SS
+        print(f"Overriding calibration.alpha_SS: {args.alpha_SS}")
 
     run_model(config, cli_output_dir=args.output_dir)

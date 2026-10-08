@@ -91,6 +91,18 @@ LOG OF CHANGES (relative to disc_setup.py)
  it is now treated as out of range for the same reason. The other solve_for modes are
  unchanged (they impose Mdot = disc.Mdot, so no check is needed) and their 'info' has no
  'Mdot_in_range' key (callers treat a missing key as in range).
+-(2026-10-08) solve_for = 'none' now accepts "hold" and "alpha_SS" (both used to be rejected):
+     "calibration": {"solve_for": "none", "hold": "alpha_SS", "alpha_SS": 1e-4}
+ fixes the VISCOUS alpha_SS (dimensionless) and derives the TOTAL alpha per run as
+ alpha = alpha_SS (1 + psi_DW); disc.alpha is then ignored and overwritten in run_config
+ with the derived value. hold absent / "alpha" keeps the previous behaviour (disc.alpha is
+ the TOTAL alpha, used as given). Errors: hold not in ('alpha', 'alpha_SS'); hold =
+ 'alpha_SS' without alpha_SS; alpha_SS given with hold = 'alpha' (would be silently
+ ignored). info['hold'] / info['alpha_SS_fixed'] now report the mode actually used
+ (were always 'alpha' / NaN). Why: with TOTAL alpha fixed, alpha_SS = alpha / (1 + psi)
+ changes across a psi_DW sweep; this keeps the turbulent viscosity fixed instead.
+ run_model_Hof.py adds --alpha_SS (overrides calibration.alpha_SS) and an "_aSS" filename
+ token for this mode.
 
 UNITS
 -----
@@ -581,14 +593,48 @@ def _fixed_initial_disc(grid, star, config, kappa):
 
     # ---- keys that only make sense when something is being solved: reject, don't ignore ----
     # (silently ignoring e.g. a leftover "bracket" would let the user believe it had an effect)
-    unused = [k for k in ('bracket', 'hold', 'alpha_SS', 'n_scan', 'rtol') if k in calib]
+    # (Hof, 2026-10-08) 'hold' and 'alpha_SS' are no longer in this list: they now select
+    # which alpha is fixed in this mode (see below).
+    unused = [k for k in ('bracket', 'n_scan', 'rtol') if k in calib]
     if unused:
         raise ValueError(f"calibration.solve_for = 'none' solves nothing, so calibration keys "
-                         f"{unused} have no meaning; remove them (only 'solve_for' is used).")
+                         f"{unused} have no meaning; remove them (only 'solve_for', 'hold' and "
+                         f"'alpha_SS' are used).")
+
+    # ---- (Hof, 2026-10-08) which alpha is fixed: TOTAL (default) or VISCOUS ----
+    #   "hold" absent or "alpha"  -> disc.alpha is the TOTAL alpha, used as given (previous
+    #                                behaviour); calibration.alpha_SS must NOT be given.
+    #   "hold": "alpha_SS"        -> calibration.alpha_SS (REQUIRED) is the fixed VISCOUS alpha,
+    #                                and the TOTAL alpha is derived per run:
+    #                                    alpha = alpha_SS * (1 + psi_DW)       [dimensionless]
+    #                                disc.alpha is ignored. Use this to keep the turbulent
+    #                                viscosity fixed across a psi_DW sweep (--psi_DW, --alpha_SS
+    #                                from run_popsynth_Hof.sh); with fixed TOTAL alpha, alpha_SS
+    #                                = alpha / (1 + psi) would change with every psi.
+    hold = calib.get('hold', 'alpha')
+    if hold not in ('alpha', 'alpha_SS'):
+        raise ValueError(f"calibration.hold must be 'alpha' (TOTAL alpha fixed) or 'alpha_SS' "
+                         f"(viscous alpha fixed), got {hold!r}")
+    if hold == 'alpha_SS' and calib.get('alpha_SS') is None:
+        raise ValueError("calibration.solve_for = 'none' with hold = 'alpha_SS' needs the fixed viscous "
+                         "alpha: add \"alpha_SS\": <value> (dimensionless) to the calibration section, "
+                         "or pass --alpha_SS on the command line.")
+    if hold == 'alpha' and 'alpha_SS' in calib:
+        # ambiguous: with hold = 'alpha' the TOTAL alpha comes from disc.alpha, so a given alpha_SS
+        # would silently have no effect
+        raise ValueError("calibration.alpha_SS is given but hold is 'alpha' (TOTAL alpha = disc.alpha "
+                         "fixed), so alpha_SS would be ignored. Add \"hold\": \"alpha_SS\" to fix the "
+                         "viscous alpha, or remove alpha_SS.")
+    if hold == 'alpha_SS':
+        alpha_SS_fixed = float(calib['alpha_SS'])                              # dimensionless
+        alpha_total = alpha_SS_fixed * (1.0 + float(config['winds']['psi_DW']))  # dimensionless
+    else:
+        alpha_SS_fixed = np.nan                                               # not used
+        alpha_total = config['disc']['alpha']                                 # TOTAL, checked below
 
     # ---- full parameter set, straight from the config (units as in evaluate_initial_disc) ----
     p = {
-        'alpha':  config['disc']['alpha'],    # TOTAL alpha = alpha_SS (1 + psi), dimensionless
+        'alpha':  alpha_total,                # TOTAL alpha = alpha_SS (1 + psi), dimensionless
         'M':      config['disc']['M'],        # Msun
         'Rd':     config['disc']['Rd'],       # AU
         'gamma':  config['disc']['gamma'],    # Sigma power-law index, dimensionless
@@ -633,8 +679,10 @@ def _fixed_initial_disc(grid, star, config, kappa):
         'Mdot_relerr': float(abs(Mdot / Mdot_nominal - 1)),   # dimensionless, informational only
         'n_evals': 1,
         'n_roots': 0,
-        'hold': 'alpha',                        # the TOTAL alpha from the config is used as given
-        'alpha_SS_fixed': np.nan,               # dimensionless; not used in this mode
+        # (Hof, 2026-10-08) 'alpha' = TOTAL alpha from disc.alpha used as given (previous
+        # behaviour); 'alpha_SS' = viscous alpha fixed, TOTAL alpha = alpha_SS (1 + psi_DW)
+        'hold': hold,
+        'alpha_SS_fixed': float(alpha_SS_fixed),   # dimensionless; NaN when hold = 'alpha'
         't_visc_Rd_yr': float(t_visc_Rd),       # yr, viscous time at Rd (see above)
         # (Hof, 2026-10-08) initial-Mdot range check (see MDOT_VALID_RANGE_NONE)
         'Mdot_in_range': Mdot_in_range,                         # bool; False -> run is NOT evolved
@@ -642,6 +690,10 @@ def _fixed_initial_disc(grid, star, config, kappa):
     }
 
     print(f"Calibration: solve_for = 'none' -> NO parameter solved; every value taken from the config.")
+    if hold == 'alpha_SS':
+        # (Hof, 2026-10-08) say explicitly that disc.alpha was NOT used
+        print(f"    hold = 'alpha_SS': viscous alpha_SS = {alpha_SS_fixed:.4e} fixed (calibration.alpha_SS); "
+              f"TOTAL alpha = alpha_SS (1 + psi_DW) = {p['alpha']:.4e} (disc.alpha ignored)")
     print(f"    total alpha = {p['alpha']:.4e}, alpha_SS = {res['alpha_SS']:.4e} (dimensionless); "
           f"gamma = {p['gamma']:.4g}, M = {p['M']:.4g} Msun, Rd = {p['Rd']:.4g} AU, "
           f"psi_DW = {p['psi_DW']:.4g}, e_rad = {p['e_rad']:.4g}")
@@ -662,6 +714,10 @@ def _fixed_initial_disc(grid, star, config, kappa):
         print(f"    initial Mdot is inside the accepted range [{lo:.1e}, {hi:.1e}] Msun/yr -> run proceeds.")
 
     run_config = copy.deepcopy(config)          # values unchanged (nothing was solved)
+    if hold == 'alpha_SS':
+        # (Hof, 2026-10-08) record the DERIVED total alpha (dimensionless) in disc.alpha, so the
+        # logged config and every later reader of run_config see the alpha actually used
+        run_config['disc']['alpha'] = p['alpha']
     run_config['calibration_result'] = info     # ends up in the logged config json
 
     return {'disc': res['disc'], 'eos': res['eos'], 'Sigma': res['Sigma'],
@@ -687,7 +743,10 @@ def solve_initial_disc(grid, star, config, kappa):
                                    (default: the range in _SOLVABLE_PARAMS)
     rtol      : float, opt.     -- max allowed |Mdot/Mdot_target - 1| (default 1e-6)
     n_scan    : int, opt.       -- number of points in the coarse scan (default 31)
-    hold      : str, opt.       -- (Hof, only with solve_for = 'psi_DW') which alpha stays
+    hold      : str, opt.       -- (Hof, only with solve_for = 'psi_DW', or since 2026-10-08
+                                   also 'none' -- see _fixed_initial_disc(); there the default
+                                   is 'alpha' and hold = 'alpha_SS' gives TOTAL alpha =
+                                   calibration.alpha_SS (1 + psi_DW) per run) which alpha stays
                                    fixed while psi varies: 'alpha_SS' (default since
                                    2026-09-30; viscous alpha fixed, total alpha =
                                    alpha_SS (1 + psi) at each trial psi) or 'alpha' (TOTAL
