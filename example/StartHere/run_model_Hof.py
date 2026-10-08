@@ -170,6 +170,18 @@ with one further addition -- see that file's own docstring.)
  (for a failed run Python's traceback follows it). Read back by load_data() in the
  Hof_figures_*.ipynb notebooks as data["run_start"] / data["run_end"] (datetime or None).
  Why: the run duration could previously only be estimated from file-system timestamps.
+-(2026-10-08) calibration.solve_for = 'none' + out-of-range initial Mdot: if
+ disc_setup_Hof._fixed_initial_disc() reports info['Mdot_in_range'] = False (initial inner
+ Mdot outside MDOT_VALID_RANGE_NONE = (1e-10, 1e-6) Msun/yr, or <= 0, or non-finite),
+ run_model() writes a FLAGGED output file via the new write_not_run_file() -- same filename,
+ attrs only (complete = True, Mdot_out_of_range = True, not_run_reason, calib_Mdot [Msun/yr],
+ Mdot_valid_range_lo/hi [Msun/yr], alpha_total, alpha_SS, run_start/run_end, config_json),
+ no datasets -- prints a "Run NOT evolved" summary and RETURNS NORMALLY (exit code 0). The
+ disc is not evolved. So a parameter sweep (run_popsynth_Hof.sh, set -e) continues with the
+ next combination, and a re-launched sweep skips the flagged one (complete = True). The
+ notebooks' load_data() recognises the flag (data["Mdot_out_of_range"] = True) and such
+ runs are not plotted. Placed right after log_config(), so the attempt is still logged.
+ run_model_Hof_dense.py does NOT have this check (it would evolve the disc anyway).
 
 WHAT THIS RUNS
 --------------
@@ -554,6 +566,44 @@ def grow_and_set(dset, value):
     dset[n] = value
 
 
+def write_not_run_file(outfile, config, calib, run_start):
+    """
+    (Hof, 2026-10-08) Write a FLAGGED "not run" output file for a solve_for = 'none' run
+    whose initial inner Mdot is outside disc_setup_Hof.MDOT_VALID_RANGE_NONE (Msun/yr).
+
+    The file has NO datasets (no t, Sigma_G, ...) -- only attributes:
+        complete            True   -> a re-launched sweep skips this combination
+                                      (run_model()'s skip-if-complete check)
+        Mdot_out_of_range   True   -> the flag load_data() in the Hof notebooks looks for;
+                                      such files are not plotted
+        not_run_reason      human-readable explanation (str)
+        calib_Mdot          initial inner Mdot at R_c[0], Msun/yr (the out-of-range value)
+        Mdot_valid_range_lo, Mdot_valid_range_hi   accepted bounds, Msun/yr
+        calib_solve_for     'none';  alpha_solver 'none'
+        alpha_total, alpha_SS                       dimensionless
+        run_start, run_end  ISO 8601 local time (same convention as a normal run)
+        config_json         the full run config (json string), for traceability
+    psi_DW / e_rad / gamma / M / Mdot / Rd are recoverable from the filename as usual.
+    """
+    info = calib['info']
+    lo, hi = info['Mdot_valid_range']                                       # Msun / yr
+    with h5py.File(outfile, "w") as h5f:
+        h5f.attrs["complete"] = True
+        h5f.attrs["Mdot_out_of_range"] = True
+        h5f.attrs["not_run_reason"] = (f"initial Mdot = {info['Mdot']:.4e} Msun/yr at R_c[0] is outside "
+                                       f"[{lo:.1e}, {hi:.1e}] Msun/yr (solve_for = 'none'); disc not evolved")
+        h5f.attrs["calib_Mdot"] = float(info['Mdot'])                       # Msun / yr
+        h5f.attrs["Mdot_valid_range_lo"] = float(lo)                        # Msun / yr
+        h5f.attrs["Mdot_valid_range_hi"] = float(hi)                        # Msun / yr
+        h5f.attrs["calib_solve_for"] = info['solve_for']
+        h5f.attrs["alpha_solver"] = 'none'
+        h5f.attrs["alpha_total"] = float(calib['alpha'])                    # dimensionless
+        h5f.attrs["alpha_SS"] = float(calib['alpha_SS'])                    # dimensionless
+        h5f.attrs["run_start"] = run_start.isoformat(timespec="seconds")
+        h5f.attrs["run_end"] = datetime.now().replace(microsecond=0).isoformat(timespec="seconds")
+        h5f.attrs["config_json"] = json.dumps(config, default=str)
+
+
 def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
     """
     Create the HDF5 file and every dataset/group it will need, but do not
@@ -890,6 +940,23 @@ def run_model(config, cli_output_dir=None):
     # complete run does not add a redundant log entry. See log_config() above
     # for exactly what gets written and where.
     log_config(config, outfile, output_dir)
+
+    # ---- 1b. (Hof, 2026-10-08) solve_for = 'none' with an out-of-range initial Mdot ----
+    # disc_setup_Hof._fixed_initial_disc() sets info['Mdot_in_range'] = False when the initial
+    # inner Mdot is outside MDOT_VALID_RANGE_NONE (Msun/yr). Then the disc is NOT evolved: a
+    # flagged file (attrs complete = True, Mdot_out_of_range = True, no datasets) is written so
+    # the sweep has a record and a re-launch skips it, and run_model() RETURNS NORMALLY (no
+    # exception -> exit code 0), so run_popsynth_Hof.sh (set -e) carries on with the next
+    # combination. Other solve_for modes have no 'Mdot_in_range' key -> treated as in range.
+    if calib is not None and not calib['info'].get('Mdot_in_range', True):
+        write_not_run_file(outfile, config, calib, run_start)
+        print("\n" + "=" * 70)
+        print(f"Run NOT evolved: {os.path.basename(outfile)}")
+        print(f"  initial Mdot = {calib['info']['Mdot']:.4e} Msun/yr is outside "
+              f"[{calib['info']['Mdot_valid_range'][0]:.1e}, {calib['info']['Mdot_valid_range'][1]:.1e}] Msun/yr")
+        print(f"  flagged output file written (attr Mdot_out_of_range = True); nothing to plot")
+        print("=" * 70, flush=True)
+        return
 
     # ---- 2. grid + star ----
     # (Hof) grid/star/kappa construction moved into _build_grid_star_kappa() (same code)

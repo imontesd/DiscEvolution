@@ -81,6 +81,16 @@ LOG OF CHANGES (relative to disc_setup.py)
  keys ('alpha_SS_fixed' is always the user's value now). Configs checked:
  only config/DiscConfig_Hof_Ben.json solves for psi_DW, and it already sets
  "alpha_SS": 1e-5, so no config needed changing.
+-(2026-10-08) solve_for = 'none' (_fixed_initial_disc): the initial inner Mdot (an OUTPUT in
+ this mode, Msun/yr at R_c[0]) is now checked against MDOT_VALID_RANGE_NONE = (1e-10, 1e-6)
+ Msun/yr (inclusive). New info keys: 'Mdot_in_range' (bool) and 'Mdot_valid_range'
+ ([lo, hi], Msun/yr). Out of range (including Mdot <= 0 or non-finite) is NOT an error:
+ a warning is printed and run_model_Hof.py then writes a "not run" output file (flagged with
+ HDF5 attr Mdot_out_of_range = True) instead of evolving the disc, so one bad combination
+ in a parameter sweep cannot stop the sweep. A non-finite Mdot used to raise RuntimeError;
+ it is now treated as out of range for the same reason. The other solve_for modes are
+ unchanged (they impose Mdot = disc.Mdot, so no check is needed) and their 'info' has no
+ 'Mdot_in_range' key (callers treat a missing key as in range).
 
 UNITS
 -----
@@ -532,6 +542,24 @@ def evaluate_initial_disc(grid, star, p, eos_params, kappa):
 # config['disc']['Mdot'] is then only a nominal label (it still appears in the output
 # filename via output_filename(), but it is NOT the disc's real initial Mdot).
 
+# (Hof, 2026-10-08) Accepted range of the initial inner Mdot in solve_for = "none" mode,
+# in Msun / yr (the unit AccretionDisc.Mdot / evaluate_initial_disc() return), inclusive.
+# Since nothing is solved in this mode, a parameter combination in a sweep can give an
+# unphysical initial accretion rate; such a run is flagged and NOT evolved (see
+# _fixed_initial_disc() and run_model_Hof.run_model()). Change the bounds here if needed.
+MDOT_VALID_RANGE_NONE = (1e-10, 1e-6)          # (lo, hi), Msun / yr
+
+
+def mdot_in_valid_range(Mdot, valid_range=MDOT_VALID_RANGE_NONE):
+    """
+    (Hof, 2026-10-08) True if Mdot [Msun/yr] is finite and lo <= Mdot <= hi (inclusive),
+    with (lo, hi) = valid_range [Msun/yr]. Mdot <= 0 (net outward flow at the inner edge)
+    and NaN/inf are always out of range, since lo > 0.
+    """
+    lo, hi = valid_range
+    return bool(np.isfinite(Mdot) and lo <= Mdot <= hi)
+
+
 def _fixed_initial_disc(grid, star, config, kappa):
     """
     (Hof, 2026-09-30) Build the initial disc with ALL parameters fixed at their config
@@ -580,9 +608,11 @@ def _fixed_initial_disc(grid, star, config, kappa):
     res = evaluate_initial_disc(grid, star, p, config['eos'], kappa)
     Mdot = res['Mdot']                                           # Msun / yr, at R_c[0]
     Mdot_nominal = float(config['disc']['Mdot'])                 # Msun / yr, label only
-    if not np.isfinite(Mdot):
-        raise RuntimeError(f"calibration.solve_for = 'none': the initial disc gives a non-finite "
-                           f"Mdot at R_c[0] ({Mdot}); check the parameters {p}.")
+    # (Hof, 2026-10-08) range check instead of an error: a non-finite (or <= 0, or too
+    # small/large) Mdot is flagged via info['Mdot_in_range'] = False, and run_model_Hof.py
+    # then writes a flagged "not run" file instead of evolving the disc. This used to be a
+    # RuntimeError for non-finite Mdot, which would have stopped a parameter sweep.
+    Mdot_in_range = mdot_in_valid_range(Mdot)                    # bool
 
     # ---- viscous time at Rd (Lynden-Bell & Pringle), for comparing runs ----
     #   t_nu = Rd^2 / (3 (2 - gamma)^2 nu(Rd))
@@ -606,6 +636,9 @@ def _fixed_initial_disc(grid, star, config, kappa):
         'hold': 'alpha',                        # the TOTAL alpha from the config is used as given
         'alpha_SS_fixed': np.nan,               # dimensionless; not used in this mode
         't_visc_Rd_yr': float(t_visc_Rd),       # yr, viscous time at Rd (see above)
+        # (Hof, 2026-10-08) initial-Mdot range check (see MDOT_VALID_RANGE_NONE)
+        'Mdot_in_range': Mdot_in_range,                         # bool; False -> run is NOT evolved
+        'Mdot_valid_range': list(MDOT_VALID_RANGE_NONE),        # [lo, hi], Msun / yr
     }
 
     print(f"Calibration: solve_for = 'none' -> NO parameter solved; every value taken from the config.")
@@ -617,11 +650,16 @@ def _fixed_initial_disc(grid, star, config, kappa):
     print(f"    viscous time at Rd: t_nu = Rd^2 / (3 (2-gamma)^2 nu(Rd)) = {t_visc_Rd:.4e} yr")
     print(f"    NOTE: the output filename's 'Mdot' token is the NOMINAL disc.Mdot; the real initial "
           f"Mdot is stored in HDF5 attr calib_Mdot.")
-    if Mdot <= 0:
-        # physically possible (net OUTWARD flow at the inner edge when nu*Sigma rises steeply
-        # outward there); the run is still well defined, so warn rather than stop
-        print(f"    WARNING: Mdot at R_c[0] is <= 0 (net outward flow at the inner edge) for this "
-              f"parameter set; the run will still proceed.")
+    # (Hof, 2026-10-08) replaces the old "Mdot <= 0 -> warn but proceed" message: Mdot <= 0
+    # is now one case of "out of range" and the run is NOT evolved (no exception raised).
+    lo, hi = MDOT_VALID_RANGE_NONE                               # Msun / yr
+    if not Mdot_in_range:
+        print(f"    WARNING: initial Mdot = {Mdot:.4e} Msun/yr is OUTSIDE the accepted range "
+              f"[{lo:.1e}, {hi:.1e}] Msun/yr (MDOT_VALID_RANGE_NONE in disc_setup_Hof.py).\n"
+              f"             This run will NOT be evolved; a flagged output file "
+              f"(attr Mdot_out_of_range = True) is written instead.")
+    else:
+        print(f"    initial Mdot is inside the accepted range [{lo:.1e}, {hi:.1e}] Msun/yr -> run proceeds.")
 
     run_config = copy.deepcopy(config)          # values unchanged (nothing was solved)
     run_config['calibration_result'] = info     # ends up in the logged config json
