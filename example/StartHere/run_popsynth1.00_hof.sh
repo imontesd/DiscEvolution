@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=162          # must equal NPROC below, and fit on ONE node
 #SBATCH --mem-per-cpu=4G             # NOTE: CPU x MEM per CPU <= 748 GB to fit on a single node
 #SBATCH --job-name=hof_popsynth1.00
-#SBATCH --output=%x_%j.out           # this script's own echo output
+#SBATCH --output=/project/def-mbalogh/imontesd/output/DiscEvolution/logs/%x_%j.out     # this script's own echo output
 #SBATCH --mail-user=imontesdeocahof@gmail.com
 #SBATCH --mail-type=END,FAIL
 #
@@ -48,8 +48,8 @@ set -euo pipefail
 
 # Optional: make the job independent of the submitting shell's environment
 # (uncomment on Nibi; use the SAME modules the venv was built with).
-# module load StdEnv/2023 python/3.12
-# source /project/def-mbalogh/imontesd/DiscEvolution/.venv/bin/activate
+module load StdEnv/2023 python/3.12
+source /project/def-mbalogh/imontesd/DiscEvolution/.venv/bin/activate
 
 # ---------------------------------------------------------------------------
 # 1. Parameter grid. Edit these lines to change what gets run.
@@ -73,7 +73,7 @@ SCRIPT_DIR="/home/imontesd/projects/def-mbalogh/imontesd/DiscEvolution/example/S
 
 CONFIG_FILE="$SCRIPT_DIR/config/popsynth/DiscConfig_Hof_popsynth1.00.json"
 
-OUTDIR="/project/def-mbalogh/imontesd/output/DiscEvolution/popsynth/test"   # NOTE: still the "test" folder
+OUTDIR="/project/def-mbalogh/imontesd/output/DiscEvolution/popsynth/1.00"   # NOTE: change folder for each new popsynth
 LOGDIR="/project/def-mbalogh/imontesd/output/DiscEvolution/logs"
 NPROC=162
 

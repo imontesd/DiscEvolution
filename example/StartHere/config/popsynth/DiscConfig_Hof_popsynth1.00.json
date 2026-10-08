@@ -13,7 +13,7 @@
     "T_eff": 4000
   },
   "simulation": {
-    "run_name": "hof_discwind_popsynthtest",
+    "run_name": "hof_discwind_popsynth1.00",
     "t_initial": 0,
     "t_interval": [
       0,
