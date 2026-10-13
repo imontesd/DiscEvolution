@@ -36,6 +36,8 @@ so it can be recovered for the wind mass-loss-rate calculation. The config key i
 `e_rad` (underscore); the filename token is `erad` (no underscore). `load_data()`
 regex-extracts both `psi` and `erad` from the filename.
 
+When answering to prompts, refer back to Tabone et al. (2022) and Balogh (2026) as often as possible, and always explicitly cite where ideas from these papers are used, with equation or page numbers
+
 ## Units (the thing that trips everyone up)
 
 Code works in `G = AU = Msun = 1`; the time unit is *not* seconds/years — `yr = 2π`
