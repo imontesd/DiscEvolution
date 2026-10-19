@@ -25,8 +25,13 @@
 #     same file is used for local tests and the Step 6 pilot without editing it;
 #   * FIRST_ID / LAST_ID run only part of the population (pilot, or discs added by raising N);
 #   * DRY_RUN=1 prints the commands without running them;
-#   * ALL logs go to logs/malanga-comparison/ (this script's own Slurm output, one .out/.err per disc named
-#     after it, e.g. hof_malanga_w0_0042.out/.err, plus the job list and the GNU-parallel joblog);
+#   * ALL logs go to logs/malanga-comparison/ (LOGDIR), never directly into logs/ itself:
+#       logs/malanga-comparison/            this script's own Slurm output (hof_malanga_<jobid>.out),
+#                                           the job list and the GNU-parallel joblog
+#       logs/malanga-comparison/run_logs/   (Hof, 2026-10-19) one .out/.err per disc, named after it,
+#                                           e.g. hof_malanga_w0_0042.out/.err (RUNLOGDIR)
+#     The script stops if LOGDIR resolves to the top-level logs/ folder (LOGS_ROOT), e.g. because a
+#     LOGDIR variable exported in the submitting shell overrode the default;
 #   * GNU parallel writes a joblog (exit code + wall time per disc), independent of the HDF5 attrs;
 #   * the fallback loop (no GNU parallel) keeps all NPROC slots busy with `wait -n` instead of
 #     waiting for a whole wave to finish;
@@ -62,7 +67,9 @@ SCRIPT_DIR="${SCRIPT_DIR:-/home/imontesd/projects/def-mbalogh/imontesd/DiscEvolu
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/config/popsynth/DiscConfig_Hof_malanga.json}"
 DRAWS_CSV="${DRAWS_CSV:-$SCRIPT_DIR/config/popsynth/malanga_draws_Hof_N324_seed1.csv}"   # from sample_malanga_Hof.py
 OUTDIR="${OUTDIR:-/project/def-mbalogh/imontesd/output/DiscEvolution/popsynth/malanga}"
-LOGDIR="${LOGDIR:-/project/def-mbalogh/imontesd/output/DiscEvolution/logs/malanga-comparison}"   # per-disc logs, job list, joblog
+LOGS_ROOT="/project/def-mbalogh/imontesd/output/DiscEvolution/logs"   # shared logs folder: nothing is written DIRECTLY here
+LOGDIR="${LOGDIR:-$LOGS_ROOT/malanga-comparison}"   # this sweep's folder: Slurm output, job list, joblog
+RUNLOGDIR="$LOGDIR/run_logs"     # (Hof, 2026-10-19) per-disc .out/.err logs, one pair per disc
 NPROC="${NPROC:-192}"            # runs at once; keep equal to --cpus-per-task above
 FIRST_ID="${FIRST_ID:-}"         # first disc id to run (inclusive); empty = from the start of the CSV
 LAST_ID="${LAST_ID:-}"           # last disc id to run (inclusive); empty = to the end of the CSV
@@ -74,7 +81,15 @@ DRY_RUN="${DRY_RUN:-0}"          # 1 = print the run_model_Hof.py commands, run 
 for f in "$CONFIG_FILE" "$DRAWS_CSV" "$SCRIPT_DIR/run_model_Hof.py"; do
     [[ -f "$f" ]] || { echo "ERROR: not found: $f" >&2; exit 1; }
 done
-mkdir -p "$OUTDIR" "$LOGDIR"
+# (Hof, 2026-10-19) never write logs directly into the shared logs/ folder (LOGS_ROOT): LOGDIR must
+# be a subfolder of it (or somewhere else entirely, e.g. a local test folder). realpath -m resolves
+# trailing slashes, "..", and symlinks without requiring the folders to exist yet.
+if [[ "$(realpath -m "$LOGDIR")" == "$(realpath -m "$LOGS_ROOT")" ]]; then
+    echo "ERROR: LOGDIR = $LOGDIR is the shared logs folder itself; use a subfolder (default:" >&2
+    echo "       $LOGS_ROOT/malanga-comparison). Check for an exported LOGDIR: echo \$LOGDIR" >&2
+    exit 1
+fi
+mkdir -p "$OUTDIR" "$LOGDIR" "$RUNLOGDIR"
 
 # Keep each population with its outputs, and never mix two populations in one OUTDIR. A population
 # CSV already in OUTDIR is compatible with DRAWS_CSV only if one is a line-by-line PREFIX of the
@@ -125,7 +140,7 @@ echo "Config:     $CONFIG_FILE"
 echo "Population: $DRAWS_CSV"
 echo "Discs:      $NJOBS (ids ${FIRST_ID:-start}..${LAST_ID:-end}), $NPROC at a time"
 echo "Output to:  $OUTDIR"
-echo "Logs to:    $LOGDIR"
+echo "Logs to:    $LOGDIR  (per-disc .out/.err in $RUNLOGDIR)"
 [[ "$DRY_RUN" == 1 ]] && echo "DRY RUN: commands are printed, nothing is run"
 echo
 
@@ -143,14 +158,14 @@ run_one() {
         echo "${cmd[*]}"
         return 0
     fi
-    echo "[$(date +%T)] Launching $rn (skips itself if already complete -- see $rn.out)"
+    echo "[$(date +%T)] Launching $rn (skips itself if already complete -- see run_logs/$rn.out)"
     # "|| ..." keeps one crashed run from stopping the sweep under set -e (traceback in .err);
     # `return 1` still reports the failure to GNU parallel's joblog.
-    "${cmd[@]}" > "$LOGDIR/$rn.out" 2> "$LOGDIR/$rn.err" \
-        || { echo "[$(date +%T)] FAILED $rn -- see $LOGDIR/$rn.err"; return 1; }
+    "${cmd[@]}" > "$RUNLOGDIR/$rn.out" 2> "$RUNLOGDIR/$rn.err" \
+        || { echo "[$(date +%T)] FAILED $rn -- see $RUNLOGDIR/$rn.err"; return 1; }
 }
 export -f run_one
-export SCRIPT_DIR CONFIG_FILE OUTDIR LOGDIR DRY_RUN
+export SCRIPT_DIR CONFIG_FILE OUTDIR LOGDIR RUNLOGDIR DRY_RUN
 
 if command -v parallel >/dev/null 2>&1; then
     # one disc per job-list line, columns -> {1}..{6}; starts the next disc as soon as a slot frees
@@ -180,7 +195,7 @@ echo "[$(date +%T)] All selected discs finished."
 n_h5=0; n_err=0
 while read -r rn _; do
     if compgen -G "$OUTDIR/${rn}_gamma*.h5" > /dev/null; then n_h5=$((n_h5 + 1)); fi
-    if [[ -s "$LOGDIR/$rn.err" ]]; then n_err=$((n_err + 1)); fi
+    if [[ -s "$RUNLOGDIR/$rn.err" ]]; then n_err=$((n_err + 1)); fi
 done < "$JOBLIST"
 echo "Output files present: $n_h5 / $NJOBS selected discs"
 echo "Selected discs with a non-empty .err log (worth a look): $n_err"
