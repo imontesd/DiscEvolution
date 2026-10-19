@@ -17,7 +17,7 @@ No disc physics runs here: this is sampling plus the parameter mapping only.
 Usage
 -----
     python sample_malanga_Hof.py                      # N = 324, seed = 1, M* = 1 Msun
-    python sample_malanga_Hof.py --N 10000 --seed 1 --out /tmp/test.csv --allow_unverified
+    python sample_malanga_Hof.py --N 10000 --seed 1 --out /tmp/test.csv   # large test sample
 Writes <out>.csv and <out>.json (metadata: seed, N, Table 2 values as used, git commit, ...).
 
 Units
@@ -152,31 +152,42 @@ def git_commit():
 def draw_population(N, seed, Mstar, alpha_SS):
     """
     Draw N discs. Returns (dict of columns, info dict with redraw counts).
-    Draw order (fixed, so a seed always gives the same population): z for M0, R0, alpha, then t_age;
-    redraws (R0 below the grid, age outside (0, T_FINAL_MYR]) come after, from the same generator.
+    Draw order (fixed, so a seed always gives the same population): ONE ROW of 4 standard normals
+    per disc, z[i] = (z_M0, z_R0, z_alpha, z_t) (Hof, 2026-10-19: changed from "all N z_M0, then
+    all N z_R0, ..."). The generator fills the (N, 4) array row by row, so disc i gets the same
+    parameters for ANY N with the same seed: increasing N only APPENDS new discs, and existing
+    runs (same run_name, same filename) stay valid and are skipped by the launcher.
+    Redraws (R0 below the grid, age outside (0, T_FINAL_MYR]) come after, from the same generator;
+    they are rare (~1e-4 per disc) and are the only way a disc can depend on N.
     """
     rng = np.random.default_rng(seed)
     shift = np.log10(Mstar / M_NORM)                       # dex, log10(M*/0.3)
 
-    def lognormal(name, size):
+    def lognormal(name, z):
+        """Malanga Eq. 7 for parameter `name`, given standard-normal deviate(s) z."""
         p = TABLE2[name]
-        return 10 ** (p["log10_median"] + p["lambda"] * shift + p["sigma_dex"] * rng.standard_normal(size))
+        return 10 ** (p["log10_median"] + p["lambda"] * shift + p["sigma_dex"] * z)
 
-    M0 = lognormal("M0", N)                                # Msun
-    R0 = lognormal("R0", N)                                # au
-    alpha_tot = lognormal("alpha_DW", N)                   # dimensionless (Malanga's alpha_DW = our TOTAL alpha)
-    t_age = rng.normal(TABLE2["t_age"]["mean_Myr"], TABLE2["t_age"]["sigma_Myr"], N)   # Myr
+    def age(z):
+        """t_age ~ N(<t>, sigma_t) [Myr], given standard-normal deviate(s) z."""
+        return TABLE2["t_age"]["mean_Myr"] + TABLE2["t_age"]["sigma_Myr"] * z
+
+    z = rng.standard_normal((N, 4))                        # row i = disc i: (z_M0, z_R0, z_alpha, z_t)
+    M0 = lognormal("M0", z[:, 0])                          # Msun
+    R0 = lognormal("R0", z[:, 1])                          # au
+    alpha_tot = lognormal("alpha_DW", z[:, 2])             # dimensionless (Malanga's alpha_DW = our TOTAL alpha)
+    t_age = age(z[:, 3])                                   # Myr
 
     # ---- redraws: R0 inside the grid's inner edge (also guarantees R0 > R_IN, so xi > 0) ----
     n_R0_redrawn = 0
     while np.any(bad := R0 < R_GRID_MIN):
         n_R0_redrawn += int(bad.sum())
-        R0[bad] = lognormal("R0", int(bad.sum()))
+        R0[bad] = lognormal("R0", rng.standard_normal(int(bad.sum())))
     # ---- redraws: ages outside (0, T_FINAL_MYR] (>4.7 sigma; essentially never) ----
     n_t_redrawn = 0
     while np.any(bad := (t_age <= 0) | (t_age > T_FINAL_MYR)):
         n_t_redrawn += int(bad.sum())
-        t_age[bad] = rng.normal(TABLE2["t_age"]["mean_Myr"], TABLE2["t_age"]["sigma_Myr"], int(bad.sum()))
+        t_age[bad] = age(rng.standard_normal(int(bad.sum())))
 
     # ---- round to what run_model_Hof.py will receive; everything below uses ROUNDED values ----
     M0 = round_sig(M0, SIG_FIGS["M0"])
@@ -277,10 +288,7 @@ if __name__ == "__main__":
     ap.add_argument("--out", type=str, default=None,
                     help="output CSV path (default config/popsynth/malanga_draws_Hof_N<N>_seed<seed>.csv); "
                          "a .json with the same stem is written next to it")
-    ap.add_argument("--allow_unverified", action="store_true",
-                    help="write a population even though TABLE2_VERIFIED is False (testing only)")
     args = ap.parse_args()
-
 
     out = args.out or os.path.join(here, "config", "popsynth", f"malanga_draws_Hof_N{args.N}_seed{args.seed}.csv")
     cols, info = draw_population(args.N, args.seed, args.Mstar, args.alpha_SS)
