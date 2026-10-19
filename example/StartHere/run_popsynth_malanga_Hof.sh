@@ -24,6 +24,8 @@
 #   * every setting below can be overridden from the environment (VAR=value ./script.sh), so the
 #     same file is used for local tests and the Step 6 pilot without editing it;
 #   * FIRST_ID / LAST_ID run only part of the population (pilot, or discs added by raising N);
+#     (Hof, 2026-10-19) IDS="0 1 2 68 172" runs an arbitrary SET of disc ids instead (e.g. a pilot
+#     with the extreme discs); IDS cannot be combined with FIRST_ID / LAST_ID;
 #   * DRY_RUN=1 prints the commands without running them;
 #   * ALL logs go to logs/malanga-comparison/ (LOGDIR), never directly into logs/ itself:
 #       logs/malanga-comparison/            this script's own Slurm output (hof_malanga_<jobid>.out),
@@ -65,6 +67,7 @@
 # Usage:
 #   sbatch run_popsynth_malanga_Hof.sh                                # whole population on Nibi
 #   FIRST_ID=0 LAST_ID=9 sbatch run_popsynth_malanga_Hof.sh           # pilot: discs 0-9 only
+#   IDS="0 1 2 68 172" sbatch run_popsynth_malanga_Hof.sh             # pilot: a chosen set of discs
 #   DRY_RUN=1 NPROC=2 OUTDIR=/tmp/x LOGDIR=/tmp/x/logs bash run_popsynth_malanga_Hof.sh   # local check
 #   (sbatch passes the submitting shell's environment to the job by default, so the VAR=value
 #    prefixes work with sbatch too.)
@@ -90,6 +93,7 @@ RUNLOGDIR="$LOGDIR/run_logs"     # (Hof, 2026-10-19) per-disc .out/.err logs, on
 NPROC="${NPROC:-192}"            # runs at once; keep equal to --cpus-per-task above
 FIRST_ID="${FIRST_ID:-}"         # first disc id to run (inclusive); empty = from the start of the CSV
 LAST_ID="${LAST_ID:-}"           # last disc id to run (inclusive); empty = to the end of the CSV
+IDS="${IDS:-}"                   # (Hof, 2026-10-19) explicit disc ids, space- or comma-separated; empty = use FIRST_ID..LAST_ID
 DRY_RUN="${DRY_RUN:-0}"          # 1 = print the run_model_Hof.py commands, run nothing
 
 # ---------------------------------------------------------------------------
@@ -133,29 +137,40 @@ fi
 
 # Job list: one line per disc, "run_name M0 R0 psi e_rad alpha_SS", read BY COLUMN NAME (so a
 # change in the sampler's column order cannot pass the wrong value), values copied VERBATIM from
-# the CSV (4 significant figures; 6 for e_rad), filtered to FIRST_ID..LAST_ID.
+# the CSV (4 significant figures; 6 for e_rad), filtered to FIRST_ID..LAST_ID, or to the ids in IDS.
 JOBLIST="$LOGDIR/joblist_${CSV_BASE%.csv}.txt"
-python3 - "$DRAWS_CSV" "$FIRST_ID" "$LAST_ID" > "$JOBLIST" <<'EOF'
+python3 - "$DRAWS_CSV" "$FIRST_ID" "$LAST_ID" "$IDS" > "$JOBLIST" <<'EOF'
 import csv, sys
-path, first, last = sys.argv[1], sys.argv[2], sys.argv[3]
+path, first, last, ids = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+# (Hof, 2026-10-19) IDS: explicit set of disc ids ("0 1 68" or "0,1,68"); exclusive with FIRST_ID/LAST_ID
+id_set = {int(x) for x in ids.replace(",", " ").split()} if ids.strip() else None
+if id_set is not None and (first or last):
+    sys.exit("ERROR: give either IDS or FIRST_ID/LAST_ID, not both")
 need = ["id", "run_name", "M0_Msun", "R0_au", "psi_DW", "e_rad", "alpha_SS"]
 with open(path, newline="") as f:
     rows = csv.DictReader(f)
     missing = [c for c in need if c not in rows.fieldnames]
     if missing:
         sys.exit(f"ERROR: {path} has no column(s) {missing}")
+    seen = set()
     for r in rows:
         i = int(r["id"])
         if (first and i < int(first)) or (last and i > int(last)):
             continue
+        if id_set is not None and i not in id_set:
+            continue
+        seen.add(i)
         print(r["run_name"], r["M0_Msun"], r["R0_au"], r["psi_DW"], r["e_rad"], r["alpha_SS"])
+if id_set is not None and id_set - seen:
+    sys.exit(f"ERROR: IDS not in {path}: {sorted(id_set - seen)}")
 EOF
 NJOBS=$(wc -l < "$JOBLIST")
-[[ "$NJOBS" -gt 0 ]] || { echo "ERROR: no discs selected (FIRST_ID=$FIRST_ID, LAST_ID=$LAST_ID)" >&2; exit 1; }
+[[ "$NJOBS" -gt 0 ]] || { echo "ERROR: no discs selected (FIRST_ID=$FIRST_ID, LAST_ID=$LAST_ID, IDS=$IDS)" >&2; exit 1; }
 
 echo "Config:     $CONFIG_FILE"
 echo "Population: $DRAWS_CSV"
-echo "Discs:      $NJOBS (ids ${FIRST_ID:-start}..${LAST_ID:-end}), $NPROC at a time"
+if [[ -n "$IDS" ]]; then SEL="ids $IDS"; else SEL="ids ${FIRST_ID:-start}..${LAST_ID:-end}"; fi
+echo "Discs:      $NJOBS ($SEL), $NPROC at a time"
 echo "Output to:  $OUTDIR"
 echo "Logs to:    $LOGDIR  (per-disc .out/.err in $RUNLOGDIR)"
 [[ "$DRY_RUN" == 1 ]] && echo "DRY RUN: commands are printed, nothing is run"
