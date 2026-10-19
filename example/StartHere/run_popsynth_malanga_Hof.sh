@@ -44,7 +44,7 @@
 #
 # Runtime: popsynth1.00 runs to 3 Myr with total alpha ~1e-3 - 1e-2 took ~0.3-0.5 h each (median);
 # the Malanga discs have total alpha ~2e-3 - 1.1e-2, so expect ~0.3-0.5 h per disc. With
-# N = 324 and NPROC = 192 that is 2 waves (192 + 132), ~1 h; --time = 8 h is a wide margin.
+# N = 500 and NPROC = 192 that is 3 waves (192 + 192 + 116), ~1.5 h; --time = 8 h is a wide margin.
 # The Step 6 pilot (FIRST_ID=0 LAST_ID=9) measures the real value.
 #
 # Usage:
@@ -65,7 +65,7 @@ if [[ -f "$VENV/bin/activate" ]]; then source "$VENV/bin/activate"; fi
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="${SCRIPT_DIR:-/home/imontesd/projects/def-mbalogh/imontesd/DiscEvolution/example/StartHere}"
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/config/popsynth/DiscConfig_Hof_malanga.json}"
-DRAWS_CSV="${DRAWS_CSV:-$SCRIPT_DIR/config/popsynth/malanga_draws_Hof_N324_seed1.csv}"   # from sample_malanga_Hof.py
+DRAWS_CSV="${DRAWS_CSV:-$SCRIPT_DIR/config/malanga/malanga_draws_Hof_N500_seed1.csv}"   # from sample_malanga_Hof.py (population files live in config/malanga/)
 OUTDIR="${OUTDIR:-/project/def-mbalogh/imontesd/output/DiscEvolution/popsynth/malanga}"
 LOGS_ROOT="/project/def-mbalogh/imontesd/output/DiscEvolution/logs"   # shared logs folder: nothing is written DIRECTLY here
 LOGDIR="${LOGDIR:-$LOGS_ROOT/malanga-comparison}"   # this sweep's folder: Slurm output, job list, joblog

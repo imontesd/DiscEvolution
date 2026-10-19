@@ -16,7 +16,7 @@ No disc physics runs here: this is sampling plus the parameter mapping only.
 
 Usage
 -----
-    python sample_malanga_Hof.py                      # N = 324, seed = 1, M* = 1 Msun
+    python sample_malanga_Hof.py                      # N = 500, seed = 1, M* = 1 Msun -> config/malanga/
     python sample_malanga_Hof.py --N 10000 --seed 1 --out /tmp/test.csv   # large test sample
 Writes <out>.csv and <out>.json (metadata: seed, N, Table 2 values as used, git commit, ...).
 
@@ -281,16 +281,16 @@ if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser(description="Draw a Malanga et al. (2026) MHD-wind disc population "
                                              "for run_popsynth_malanga_Hof.sh (see module docstring).")
-    ap.add_argument("--N", type=int, default=324, help="number of discs (default 324 = 2 waves of 162 cores)")
+    ap.add_argument("--N", type=int, default=500, help="number of discs (default 500, the committed population; 3 waves of 192 cores)")
     ap.add_argument("--seed", type=int, default=1, help="random seed (default 1)")
     ap.add_argument("--Mstar", type=float, default=1.0, help="stellar mass the parameters are drawn at [Msun]")
     ap.add_argument("--alpha_SS", type=float, default=1e-4, help="fixed viscous alpha (dimensionless)")
     ap.add_argument("--out", type=str, default=None,
-                    help="output CSV path (default config/popsynth/malanga_draws_Hof_N<N>_seed<seed>.csv); "
+                    help="output CSV path (default config/malanga/malanga_draws_Hof_N<N>_seed<seed>.csv); "
                          "a .json with the same stem is written next to it")
     args = ap.parse_args()
 
-    out = args.out or os.path.join(here, "config", "popsynth", f"malanga_draws_Hof_N{args.N}_seed{args.seed}.csv")
+    out = args.out or os.path.join(here, "config", "malanga", f"malanga_draws_Hof_N{args.N}_seed{args.seed}.csv")   # (Hof, 2026-10-19) population files moved to config/malanga/
     cols, info = draw_population(args.N, args.seed, args.Mstar, args.alpha_SS)
     write_csv(out, cols)
 
