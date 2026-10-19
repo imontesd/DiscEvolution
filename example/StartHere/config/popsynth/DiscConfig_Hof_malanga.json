@@ -1,8 +1,8 @@
 {
   "grid": {
     "rmin": 0.1,
-    "rmax": 1000,
-    "nr": 1000,
+    "rmax": 250,
+    "nr": 500,
     "spacing": "natural",
     "smart_binning": false,
     "type": "winds-alpha"
