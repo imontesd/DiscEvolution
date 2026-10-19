@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=192          # must equal NPROC below, and fit on ONE node
 #SBATCH --mem-per-cpu=3800M          # 3.8 GB per CPU -> 192 x 3.8 GB = 730 GB <= 748 GB (one node)
 #SBATCH --job-name=hof_malanga
-#SBATCH --output=/project/def-mbalogh/imontesd/output/DiscEvolution/logs/malanga-comparison/%x_%j.out   # this script's own echo output (folder must exist BEFORE sbatch, see Usage)
+#SBATCH --output=/scratch/imontesd/output/DiscEvolution/logs/malanga-comparison/%x_%j.out   # this script's own echo output (folder must exist BEFORE sbatch)
 #SBATCH --mail-user=imontesdeocahof@gmail.com
 #SBATCH --mail-type=END,FAIL
 #
@@ -38,6 +38,21 @@
 #   * the population CSV (+ .json) is copied into OUTDIR, and the script refuses to write a
 #     DIFFERENT population into an OUTDIR that already holds one.
 #
+# (Hof, 2026-10-19) Where the OUTPUT goes: everything on SCRATCH (OUTPUT_ROOT), with the same
+# folder layout as the project output folder /project/def-mbalogh/imontesd/output/DiscEvolution:
+#     /scratch/imontesd/output/DiscEvolution/
+#     |-- popsynth/malanga/                .h5 per disc, config_log/, population CSV + .json  (OUTDIR)
+#     `-- logs/malanga-comparison/         Slurm output, job list, joblog                     (LOGDIR)
+#         `-- run_logs/                    per-disc .out/.err                                 (RUNLOGDIR)
+# The code (SCRIPT_DIR) and the venv (VENV) stay on /project. Scratch is PURGED after a while
+# (see Nibi's scratch policy), so once the job has FINISHED copy the results to project, e.g.
+#     rsync -av /scratch/imontesd/output/DiscEvolution/ /project/def-mbalogh/imontesd/output/DiscEvolution/
+# (the .h5 files are the only outputs that cannot be regenerated without re-running the discs).
+# To resume / extend a population whose scratch copy is gone, set
+#     OUTPUT_ROOT=/project/def-mbalogh/imontesd/output/DiscEvolution
+# so the skip-if-complete check finds the copied files. Note: the #SBATCH --output line above cannot
+# use variables; edit it by hand if OUTPUT_ROOT changes.
+#
 # Restart safety: run_model_Hof.py skips any disc whose output file exists with attr
 # complete = True, so re-submitting this script only runs what is left. (Since the filename
 # carries the COMPUTED initial Mdot, each skipped disc first rebuilds its initial disc, ~1 s.)
@@ -66,8 +81,10 @@ if [[ -f "$VENV/bin/activate" ]]; then source "$VENV/bin/activate"; fi
 SCRIPT_DIR="${SCRIPT_DIR:-/home/imontesd/projects/def-mbalogh/imontesd/DiscEvolution/example/StartHere}"
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/config/popsynth/DiscConfig_Hof_malanga.json}"
 DRAWS_CSV="${DRAWS_CSV:-$SCRIPT_DIR/config/malanga/malanga_draws_Hof_N500_seed1.csv}"   # from sample_malanga_Hof.py (population files live in config/malanga/)
-OUTDIR="${OUTDIR:-/project/def-mbalogh/imontesd/output/DiscEvolution/popsynth/malanga}"
-LOGS_ROOT="/project/def-mbalogh/imontesd/output/DiscEvolution/logs"   # shared logs folder: nothing is written DIRECTLY here
+OUTPUT_ROOT="${OUTPUT_ROOT:-/scratch/imontesd/output/DiscEvolution}"   # (Hof, 2026-10-19) ALL outputs on scratch ($SCRATCH = /scratch/imontesd),
+                                 # same layout as /project/def-mbalogh/imontesd/output/DiscEvolution
+OUTDIR="${OUTDIR:-$OUTPUT_ROOT/popsynth/malanga}"           # .h5 files + config_log/ + population copy
+LOGS_ROOT="$OUTPUT_ROOT/logs"   # shared logs folder: nothing is written DIRECTLY here
 LOGDIR="${LOGDIR:-$LOGS_ROOT/malanga-comparison}"   # this sweep's folder: Slurm output, job list, joblog
 RUNLOGDIR="$LOGDIR/run_logs"     # (Hof, 2026-10-19) per-disc .out/.err logs, one pair per disc
 NPROC="${NPROC:-192}"            # runs at once; keep equal to --cpus-per-task above
