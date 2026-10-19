@@ -199,6 +199,25 @@ with one further addition -- see that file's own docstring.)
  e_rad sweeps in run_popsynth_Hof.sh. e_rad was already part of the filename ("_erad"), so
  runs differing only in e_rad get distinct files. It enters lambda_DW = 1/(2(1-e_rad)(3/psi+1)) + 1
  (e_rad = 1 or psi = 0 -> lambda_DW = inf: no wind mass loss).
+-(2026-10-19) New CLI flag --run_name <str> overriding simulation.run_name (the filename
+ prefix). Why: for the Malanga et al. (2026) population (run_popsynth_malanga_Hof.sh), every
+ disc is a random draw identified by an integer id, so each run gets its own prefix, e.g.
+     --run_name hof_malanga_w0_0042
+     -> hof_malanga_w0_0042_gamma1_psi42.87_erad0.966041_aSS1.0e-04_Mdot1.0e-08_M5.6e-02_Rd1.7e+01.h5
+ This (i) guarantees distinct filenames even though M and Rd are rounded to 2 significant
+ figures in the filename (two draws could otherwise share every token), and (ii) lets the
+ analysis join each .h5 file back to its row (id, sampled age, ...) in the draws CSV.
+ output_filename() itself is UNCHANGED (it already reads simulation.run_name); without the
+ flag, filenames are exactly as before. The override goes through the same `overrides`
+ dict as the other flags, so it is printed and recorded in the logged config.
+-(2026-10-19) output_filename(): in calibration solve_for = 'none' mode the "_Mdot" token is now
+ the ACTUAL computed initial inner accretion rate (Msun/yr, at R_c[0]), read from
+ config['calibration_result']['Mdot'], with the same :.1e rounding as before. It used to be the
+ nominal disc.Mdot (e.g. always "Mdot1.0e-08"), which was not the disc's real Mdot. This
+ SUPERSEDES the 2026-09-30 statement above that the filename's Mdot token is the nominal value.
+ disc.Mdot itself, HDF5 attr calib_Mdot_target (nominal) and every other mode's filename are
+ unchanged. Files from earlier 'none' sweeps keep their old (nominal) names, so re-launching
+ such a sweep would re-run them. See output_filename() for details.
 
 WHAT THIS RUNS
 --------------
@@ -799,8 +818,27 @@ def output_filename(config):
     aSS_token = ""
     if calib_params.get('solve_for') == 'none' and calib_params.get('hold') == 'alpha_SS':
         aSS_token = f"_aSS{float(calib_params['alpha_SS']):.1e}"
+    # (Hof, 2026-10-19) "_Mdot" token = the ACTUAL initial inner accretion rate in no-solve mode.
+    # With calibration solve_for = 'none' the initial Mdot is an OUTPUT of the disc set-up, so
+    # disc.Mdot (Msun/yr) is only a nominal value and used to appear in every filename (e.g. a
+    # constant "Mdot1.0e-08"). The solved run_config now carries the computed value in
+    # config['calibration_result']['Mdot'] (Msun/yr, disc.Mdot(v_r) at R_c[0], written by
+    # disc_setup_Hof._fixed_initial_disc()), and that value is used here, with the SAME
+    # rounding as before (:.1e). Every other mode is unchanged: there Mdot is imposed, so the
+    # computed value equals disc.Mdot within rtol and the nominal value is kept.
+    # Consequences: (i) for solve_for = 'none' the filename can only be known AFTER the disc is
+    # built (run_model() already calls this after the calibration step); a config WITHOUT
+    # 'calibration_result' (e.g. a notebook predicting filenames from inputs) still gets the
+    # nominal token. (ii) files from earlier 'none' sweeps (e.g. popsynth1.00) carry the nominal
+    # token, so a re-launch of such a sweep would not recognise them and would re-run.
+    # (iii) a non-finite or negative Mdot (possible with "Mdot_valid_range": null) is written as
+    # e.g. "Mdotnan" / "Mdot-1.2e-08". Notebook regexes for _Mdot are unaffected.
+    Mdot_token = disc_params['Mdot']                                 # Msun / yr, nominal / imposed
+    calib_result = config.get('calibration_result') or {}
+    if calib_result.get('solve_for') == 'none':
+        Mdot_token = float(calib_result['Mdot'])                     # Msun / yr, computed at R_c[0]
     return (f"{run_name}_gamma{gamma}_psi{wind_params['psi_DW']}_erad{wind_params['e_rad']}{aSS_token}"
-            f"_Mdot{disc_params['Mdot']:.1e}_M{disc_params['M']:.1e}_Rd{disc_params['Rd']:.1e}.h5")
+            f"_Mdot{Mdot_token:.1e}_M{disc_params['M']:.1e}_Rd{disc_params['Rd']:.1e}.h5")
 
 
 # ============================================================================
@@ -924,8 +962,9 @@ def run_model(config, cli_output_dir=None):
               # (Hof, 2026-09-30) 'none' = fixed-parameter mode (_fixed_initial_disc)
               "                               or 'none': solve NOTHING -- alpha (TOTAL), M, Rd, gamma, psi_DW, "
               "e_rad all used as given;\n"
-              "                               the initial Mdot is then an output, disc.Mdot only a nominal "
-              "filename label\n"
+              # (Hof, 2026-10-19) the filename's Mdot token is now the computed Mdot in this mode
+              "                               the initial Mdot is then an output (written into the filename), "
+              "disc.Mdot only a nominal value\n"
               "        bracket   (optional) : [lo, hi] search range in the parameter's own units, as a JSON "
               "LIST (not a string); default from _SOLVABLE_PARAMS\n"
               "        rtol      (optional) : max |Mdot/Mdot_target - 1| accepted, dimensionless (default 1e-6)\n"
@@ -1296,6 +1335,10 @@ Examples:
     # (Hof, 2026-10-08) wind radiative-loss efficiency, for e_rad sweeps in run_popsynth_Hof.sh
     parser.add_argument("--e_rad", type=float, default=None,
                         help="Override winds.e_rad (fraction of accretion heating radiated, dimensionless, 0-1)")
+    # (Hof, 2026-10-19) filename prefix per run, for population sweeps where each run is one
+    # random draw (run_popsynth_malanga_Hof.sh passes e.g. "hof_malanga_w0_0042")
+    parser.add_argument("--run_name", type=str, default=None,
+                        help="Override simulation.run_name (prefix of the output filename and config-log name)")
 
     args = parser.parse_args()
 
@@ -1312,6 +1355,7 @@ Examples:
         ("disc", "M"): args.M,
         ("disc", "Rd"): args.Rd,
         ("winds", "e_rad"): args.e_rad,     # (Hof, 2026-10-08) dimensionless; in the filename as "_erad"
+        ("simulation", "run_name"): args.run_name,   # (Hof, 2026-10-19) str; filename prefix (output_filename())
     }
     for (section, key), value in overrides.items():
         if value is not None:

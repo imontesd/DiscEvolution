@@ -103,6 +103,27 @@ LOG OF CHANGES (relative to disc_setup.py)
  changes across a psi_DW sweep; this keeps the turbulent viscosity fixed instead.
  run_model_Hof.py adds --alpha_SS (overrides calibration.alpha_SS) and an "_aSS" filename
  token for this mode.
+-(2026-10-19) solve_for = 'none': the initial-Mdot range check is now CONFIGURABLE through a
+ new optional calibration key "Mdot_valid_range" (Msun/yr), read by the new helper
+ _mdot_valid_range_from_calib() and used in _fixed_initial_disc():
+     key ABSENT                    -> MDOT_VALID_RANGE_NONE = (1e-10, 1e-6) Msun/yr, exactly as
+                                      before (every existing config / sweep is unchanged)
+     "Mdot_valid_range": [lo, hi]  -> custom inclusive range, Msun/yr (needs 0 <= lo < hi)
+     "Mdot_valid_range": null      -> NO Mdot restriction: the range becomes (-inf, +inf), so
+                                      ANY finite initial Mdot (including Mdot <= 0) is evolved.
+                                      Only a non-finite (NaN/inf) Mdot is still flagged, since
+                                      that means the initial disc itself is broken, not that it
+                                      is outside a physical range.
+ Why: for the Malanga et al. (2026) MHD-wind population (Eq. 7, Table 2, drawn at M* = 1 Msun)
+ the initial Mdot spreads over ~0.7 dex around ~1e-7 Msun/yr, so the fixed 1e-6 ceiling would
+ silently drop the most massive / compact discs and bias the population.
+ New info key 'Mdot_range_check' (bool; False when disabled with null). info['Mdot_valid_range']
+ is always a [lo, hi] list (Msun/yr; [-inf, inf] when disabled), so run_model_Hof.py's
+ write_not_run_file() and its messages work unchanged.
+-(2026-10-19) Comments / printed NOTE only (no code change here): in solve_for = 'none' mode the
+ output filename's "_Mdot" token is now the COMPUTED initial Mdot (info['Mdot'], Msun/yr),
+ picked up by run_model_Hof.output_filename() from run_config['calibration_result']. disc.Mdot
+ stays the nominal value (info['Mdot_target']).
 
 UNITS
 -----
@@ -551,14 +572,19 @@ def evaluate_initial_disc(grid, star, p, eos_params, kappa):
 # (printed, and stored in HDF5 attr calib_Mdot). Use this whenever two runs must share the
 # same viscosity, so that the only difference between them is the one you changed.
 #     "calibration": {"solve_for": "none"}
-# config['disc']['Mdot'] is then only a nominal label (it still appears in the output
-# filename via output_filename(), but it is NOT the disc's real initial Mdot).
+# config['disc']['Mdot'] is then only a nominal label: it is NOT the disc's real initial Mdot.
+# (Hof, 2026-10-19) run_model_Hof.output_filename() now writes the COMPUTED initial Mdot
+# (info['Mdot'], via run_config['calibration_result']) into the filename in this mode, not
+# the nominal value.
 
 # (Hof, 2026-10-08) Accepted range of the initial inner Mdot in solve_for = "none" mode,
 # in Msun / yr (the unit AccretionDisc.Mdot / evaluate_initial_disc() return), inclusive.
 # Since nothing is solved in this mode, a parameter combination in a sweep can give an
 # unphysical initial accretion rate; such a run is flagged and NOT evolved (see
-# _fixed_initial_disc() and run_model_Hof.run_model()). Change the bounds here if needed.
+# _fixed_initial_disc() and run_model_Hof.run_model()). This is only the DEFAULT: since
+# (Hof, 2026-10-19) a config can override it per run with "calibration": {...,
+# "Mdot_valid_range": [lo, hi]} (Msun/yr) or switch it off with "Mdot_valid_range": null
+# (see _mdot_valid_range_from_calib()), so there is no need to edit it here.
 MDOT_VALID_RANGE_NONE = (1e-10, 1e-6)          # (lo, hi), Msun / yr
 
 
@@ -570,6 +596,36 @@ def mdot_in_valid_range(Mdot, valid_range=MDOT_VALID_RANGE_NONE):
     """
     lo, hi = valid_range
     return bool(np.isfinite(Mdot) and lo <= Mdot <= hi)
+
+
+def _mdot_valid_range_from_calib(calib):
+    """
+    (Hof, 2026-10-19) Accepted initial-Mdot range for solve_for = 'none', from the optional
+    calibration key "Mdot_valid_range" (all values in Msun / yr).
+
+    Returns (valid_range, check_on):
+        key absent        -> (MDOT_VALID_RANGE_NONE, True)   previous behaviour, unchanged
+        [lo, hi]          -> ((lo, hi), True)                custom inclusive range, 0 <= lo < hi
+        null (JSON)/None  -> ((-inf, +inf), False)           NO restriction: any finite Mdot
+                                                             (even <= 0) is evolved; a
+                                                             non-finite one is still flagged by
+                                                             mdot_in_valid_range()
+    Using (-inf, +inf) rather than None for "no check" keeps info['Mdot_valid_range']
+    a [lo, hi] pair, so every reader (run_model_Hof.write_not_run_file, prints) is unchanged.
+    """
+    if 'Mdot_valid_range' not in calib:
+        return MDOT_VALID_RANGE_NONE, True                     # Msun / yr, default
+    rng = calib['Mdot_valid_range']
+    if rng is None:
+        return (-np.inf, np.inf), False                        # check disabled
+    # explicit range: validate here so a typo fails loudly instead of flagging every run
+    if (not isinstance(rng, (list, tuple))) or len(rng) != 2:
+        raise ValueError(f"calibration.Mdot_valid_range must be [lo, hi] (Msun/yr) or null (no check), "
+                         f"got {rng!r}")
+    lo, hi = float(rng[0]), float(rng[1])                      # Msun / yr
+    if not (0.0 <= lo < hi):
+        raise ValueError(f"calibration.Mdot_valid_range needs 0 <= lo < hi (Msun/yr), got [{lo}, {hi}]")
+    return (lo, hi), True
 
 
 def _fixed_initial_disc(grid, star, config, kappa):
@@ -598,8 +654,8 @@ def _fixed_initial_disc(grid, star, config, kappa):
     unused = [k for k in ('bracket', 'n_scan', 'rtol') if k in calib]
     if unused:
         raise ValueError(f"calibration.solve_for = 'none' solves nothing, so calibration keys "
-                         f"{unused} have no meaning; remove them (only 'solve_for', 'hold' and "
-                         f"'alpha_SS' are used).")
+                         f"{unused} have no meaning; remove them (only 'solve_for', 'hold', "
+                         f"'alpha_SS' and 'Mdot_valid_range' are used).")
 
     # ---- (Hof, 2026-10-08) which alpha is fixed: TOTAL (default) or VISCOUS ----
     #   "hold" absent or "alpha"  -> disc.alpha is the TOTAL alpha, used as given (previous
@@ -658,7 +714,11 @@ def _fixed_initial_disc(grid, star, config, kappa):
     # small/large) Mdot is flagged via info['Mdot_in_range'] = False, and run_model_Hof.py
     # then writes a flagged "not run" file instead of evolving the disc. This used to be a
     # RuntimeError for non-finite Mdot, which would have stopped a parameter sweep.
-    Mdot_in_range = mdot_in_valid_range(Mdot)                    # bool
+    # (Hof, 2026-10-19) the range now comes from the optional calibration.Mdot_valid_range key
+    # (absent -> MDOT_VALID_RANGE_NONE as before; null -> no restriction, see
+    # _mdot_valid_range_from_calib()).
+    Mdot_valid_range, Mdot_range_check = _mdot_valid_range_from_calib(calib)   # Msun / yr, bool
+    Mdot_in_range = mdot_in_valid_range(Mdot, Mdot_valid_range)  # bool
 
     # ---- viscous time at Rd (Lynden-Bell & Pringle), for comparing runs ----
     #   t_nu = Rd^2 / (3 (2 - gamma)^2 nu(Rd))
@@ -686,7 +746,10 @@ def _fixed_initial_disc(grid, star, config, kappa):
         't_visc_Rd_yr': float(t_visc_Rd),       # yr, viscous time at Rd (see above)
         # (Hof, 2026-10-08) initial-Mdot range check (see MDOT_VALID_RANGE_NONE)
         'Mdot_in_range': Mdot_in_range,                         # bool; False -> run is NOT evolved
-        'Mdot_valid_range': list(MDOT_VALID_RANGE_NONE),        # [lo, hi], Msun / yr
+        # (Hof, 2026-10-19) the range actually used (calibration.Mdot_valid_range or the default);
+        # [-inf, inf] when the check is disabled with "Mdot_valid_range": null
+        'Mdot_valid_range': [float(Mdot_valid_range[0]), float(Mdot_valid_range[1])],   # [lo, hi], Msun / yr
+        'Mdot_range_check': bool(Mdot_range_check),             # False -> no Mdot restriction
     }
 
     print(f"Calibration: solve_for = 'none' -> NO parameter solved; every value taken from the config.")
@@ -700,18 +763,26 @@ def _fixed_initial_disc(grid, star, config, kappa):
     print(f"    initial Mdot at R_c[0] = {grid.Rc[0]:.4g} AU: {Mdot:.4e} Msun/yr "
           f"(nominal disc.Mdot = {Mdot_nominal:.4e} Msun/yr, ratio {Mdot / Mdot_nominal:.3g})")
     print(f"    viscous time at Rd: t_nu = Rd^2 / (3 (2-gamma)^2 nu(Rd)) = {t_visc_Rd:.4e} yr")
-    print(f"    NOTE: the output filename's 'Mdot' token is the NOMINAL disc.Mdot; the real initial "
-          f"Mdot is stored in HDF5 attr calib_Mdot.")
+    # (Hof, 2026-10-19) the filename now carries the COMPUTED Mdot in this mode (run_model_Hof.output_filename())
+    print(f"    NOTE: the output filename's 'Mdot' token is this COMPUTED initial Mdot ({Mdot:.1e} Msun/yr), "
+          f"not the nominal disc.Mdot; the full value is stored in HDF5 attr calib_Mdot.")
     # (Hof, 2026-10-08) replaces the old "Mdot <= 0 -> warn but proceed" message: Mdot <= 0
     # is now one case of "out of range" and the run is NOT evolved (no exception raised).
-    lo, hi = MDOT_VALID_RANGE_NONE                               # Msun / yr
+    # (Hof, 2026-10-19) bounds now come from calibration.Mdot_valid_range (or the default);
+    # the source is named in the messages so it is clear which setting applied
+    lo, hi = Mdot_valid_range                                    # Msun / yr
+    range_src = ("calibration.Mdot_valid_range" if 'Mdot_valid_range' in calib
+                 else "MDOT_VALID_RANGE_NONE in disc_setup_Hof.py")
     if not Mdot_in_range:
         print(f"    WARNING: initial Mdot = {Mdot:.4e} Msun/yr is OUTSIDE the accepted range "
-              f"[{lo:.1e}, {hi:.1e}] Msun/yr (MDOT_VALID_RANGE_NONE in disc_setup_Hof.py).\n"
+              f"[{lo:.1e}, {hi:.1e}] Msun/yr ({range_src}).\n"
               f"             This run will NOT be evolved; a flagged output file "
               f"(attr Mdot_out_of_range = True) is written instead.")
+    elif not Mdot_range_check:
+        print(f"    initial-Mdot range check DISABLED (calibration.Mdot_valid_range = null) -> run proceeds.")
     else:
-        print(f"    initial Mdot is inside the accepted range [{lo:.1e}, {hi:.1e}] Msun/yr -> run proceeds.")
+        print(f"    initial Mdot is inside the accepted range [{lo:.1e}, {hi:.1e}] Msun/yr "
+              f"({range_src}) -> run proceeds.")
 
     run_config = copy.deepcopy(config)          # values unchanged (nothing was solved)
     if hold == 'alpha_SS':
