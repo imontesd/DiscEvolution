@@ -199,6 +199,17 @@ with one further addition -- see that file's own docstring.)
  e_rad sweeps in run_popsynth_Hof.sh. e_rad was already part of the filename ("_erad"), so
  runs differing only in e_rad get distinct files. It enters lambda_DW = 1/(2(1-e_rad)(3/psi+1)) + 1
  (e_rad = 1 or psi = 0 -> lambda_DW = inf: no wind mass loss).
+-(2026-10-19) New CLI flag --run_name <str> overriding simulation.run_name (the filename
+ prefix). Why: for the Malanga et al. (2026) population (run_popsynth_malanga_Hof.sh), every
+ disc is a random draw identified by an integer id, so each run gets its own prefix, e.g.
+     --run_name hof_malanga_w0_0042
+     -> hof_malanga_w0_0042_gamma1_psi42.87_erad0.966041_aSS1.0e-04_Mdot1.0e-08_M5.6e-02_Rd1.7e+01.h5
+ This (i) guarantees distinct filenames even though M and Rd are rounded to 2 significant
+ figures in the filename (two draws could otherwise share every token), and (ii) lets the
+ analysis join each .h5 file back to its row (id, sampled age, ...) in the draws CSV.
+ output_filename() itself is UNCHANGED (it already reads simulation.run_name); without the
+ flag, filenames are exactly as before. The override goes through the same `overrides`
+ dict as the other flags, so it is printed and recorded in the logged config.
 
 WHAT THIS RUNS
 --------------
@@ -1296,6 +1307,10 @@ Examples:
     # (Hof, 2026-10-08) wind radiative-loss efficiency, for e_rad sweeps in run_popsynth_Hof.sh
     parser.add_argument("--e_rad", type=float, default=None,
                         help="Override winds.e_rad (fraction of accretion heating radiated, dimensionless, 0-1)")
+    # (Hof, 2026-10-19) filename prefix per run, for population sweeps where each run is one
+    # random draw (run_popsynth_malanga_Hof.sh passes e.g. "hof_malanga_w0_0042")
+    parser.add_argument("--run_name", type=str, default=None,
+                        help="Override simulation.run_name (prefix of the output filename and config-log name)")
 
     args = parser.parse_args()
 
@@ -1312,6 +1327,7 @@ Examples:
         ("disc", "M"): args.M,
         ("disc", "Rd"): args.Rd,
         ("winds", "e_rad"): args.e_rad,     # (Hof, 2026-10-08) dimensionless; in the filename as "_erad"
+        ("simulation", "run_name"): args.run_name,   # (Hof, 2026-10-19) str; filename prefix (output_filename())
     }
     for (section, key), value in overrides.items():
         if value is not None:
