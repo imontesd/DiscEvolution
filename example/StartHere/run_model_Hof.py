@@ -210,6 +210,14 @@ with one further addition -- see that file's own docstring.)
  output_filename() itself is UNCHANGED (it already reads simulation.run_name); without the
  flag, filenames are exactly as before. The override goes through the same `overrides`
  dict as the other flags, so it is printed and recorded in the logged config.
+-(2026-10-19) output_filename(): in calibration solve_for = 'none' mode the "_Mdot" token is now
+ the ACTUAL computed initial inner accretion rate (Msun/yr, at R_c[0]), read from
+ config['calibration_result']['Mdot'], with the same :.1e rounding as before. It used to be the
+ nominal disc.Mdot (e.g. always "Mdot1.0e-08"), which was not the disc's real Mdot. This
+ SUPERSEDES the 2026-09-30 statement above that the filename's Mdot token is the nominal value.
+ disc.Mdot itself, HDF5 attr calib_Mdot_target (nominal) and every other mode's filename are
+ unchanged. Files from earlier 'none' sweeps keep their old (nominal) names, so re-launching
+ such a sweep would re-run them. See output_filename() for details.
 
 WHAT THIS RUNS
 --------------
@@ -810,8 +818,27 @@ def output_filename(config):
     aSS_token = ""
     if calib_params.get('solve_for') == 'none' and calib_params.get('hold') == 'alpha_SS':
         aSS_token = f"_aSS{float(calib_params['alpha_SS']):.1e}"
+    # (Hof, 2026-10-19) "_Mdot" token = the ACTUAL initial inner accretion rate in no-solve mode.
+    # With calibration solve_for = 'none' the initial Mdot is an OUTPUT of the disc set-up, so
+    # disc.Mdot (Msun/yr) is only a nominal value and used to appear in every filename (e.g. a
+    # constant "Mdot1.0e-08"). The solved run_config now carries the computed value in
+    # config['calibration_result']['Mdot'] (Msun/yr, disc.Mdot(v_r) at R_c[0], written by
+    # disc_setup_Hof._fixed_initial_disc()), and that value is used here, with the SAME
+    # rounding as before (:.1e). Every other mode is unchanged: there Mdot is imposed, so the
+    # computed value equals disc.Mdot within rtol and the nominal value is kept.
+    # Consequences: (i) for solve_for = 'none' the filename can only be known AFTER the disc is
+    # built (run_model() already calls this after the calibration step); a config WITHOUT
+    # 'calibration_result' (e.g. a notebook predicting filenames from inputs) still gets the
+    # nominal token. (ii) files from earlier 'none' sweeps (e.g. popsynth1.00) carry the nominal
+    # token, so a re-launch of such a sweep would not recognise them and would re-run.
+    # (iii) a non-finite or negative Mdot (possible with "Mdot_valid_range": null) is written as
+    # e.g. "Mdotnan" / "Mdot-1.2e-08". Notebook regexes for _Mdot are unaffected.
+    Mdot_token = disc_params['Mdot']                                 # Msun / yr, nominal / imposed
+    calib_result = config.get('calibration_result') or {}
+    if calib_result.get('solve_for') == 'none':
+        Mdot_token = float(calib_result['Mdot'])                     # Msun / yr, computed at R_c[0]
     return (f"{run_name}_gamma{gamma}_psi{wind_params['psi_DW']}_erad{wind_params['e_rad']}{aSS_token}"
-            f"_Mdot{disc_params['Mdot']:.1e}_M{disc_params['M']:.1e}_Rd{disc_params['Rd']:.1e}.h5")
+            f"_Mdot{Mdot_token:.1e}_M{disc_params['M']:.1e}_Rd{disc_params['Rd']:.1e}.h5")
 
 
 # ============================================================================
@@ -935,8 +962,9 @@ def run_model(config, cli_output_dir=None):
               # (Hof, 2026-09-30) 'none' = fixed-parameter mode (_fixed_initial_disc)
               "                               or 'none': solve NOTHING -- alpha (TOTAL), M, Rd, gamma, psi_DW, "
               "e_rad all used as given;\n"
-              "                               the initial Mdot is then an output, disc.Mdot only a nominal "
-              "filename label\n"
+              # (Hof, 2026-10-19) the filename's Mdot token is now the computed Mdot in this mode
+              "                               the initial Mdot is then an output (written into the filename), "
+              "disc.Mdot only a nominal value\n"
               "        bracket   (optional) : [lo, hi] search range in the parameter's own units, as a JSON "
               "LIST (not a string); default from _SOLVABLE_PARAMS\n"
               "        rtol      (optional) : max |Mdot/Mdot_target - 1| accepted, dimensionless (default 1e-6)\n"

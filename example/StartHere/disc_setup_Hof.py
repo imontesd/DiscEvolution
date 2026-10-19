@@ -120,6 +120,10 @@ LOG OF CHANGES (relative to disc_setup.py)
  New info key 'Mdot_range_check' (bool; False when disabled with null). info['Mdot_valid_range']
  is always a [lo, hi] list (Msun/yr; [-inf, inf] when disabled), so run_model_Hof.py's
  write_not_run_file() and its messages work unchanged.
+-(2026-10-19) Comments / printed NOTE only (no code change here): in solve_for = 'none' mode the
+ output filename's "_Mdot" token is now the COMPUTED initial Mdot (info['Mdot'], Msun/yr),
+ picked up by run_model_Hof.output_filename() from run_config['calibration_result']. disc.Mdot
+ stays the nominal value (info['Mdot_target']).
 
 UNITS
 -----
@@ -568,8 +572,10 @@ def evaluate_initial_disc(grid, star, p, eos_params, kappa):
 # (printed, and stored in HDF5 attr calib_Mdot). Use this whenever two runs must share the
 # same viscosity, so that the only difference between them is the one you changed.
 #     "calibration": {"solve_for": "none"}
-# config['disc']['Mdot'] is then only a nominal label (it still appears in the output
-# filename via output_filename(), but it is NOT the disc's real initial Mdot).
+# config['disc']['Mdot'] is then only a nominal label: it is NOT the disc's real initial Mdot.
+# (Hof, 2026-10-19) run_model_Hof.output_filename() now writes the COMPUTED initial Mdot
+# (info['Mdot'], via run_config['calibration_result']) into the filename in this mode, not
+# the nominal value.
 
 # (Hof, 2026-10-08) Accepted range of the initial inner Mdot in solve_for = "none" mode,
 # in Msun / yr (the unit AccretionDisc.Mdot / evaluate_initial_disc() return), inclusive.
@@ -757,8 +763,9 @@ def _fixed_initial_disc(grid, star, config, kappa):
     print(f"    initial Mdot at R_c[0] = {grid.Rc[0]:.4g} AU: {Mdot:.4e} Msun/yr "
           f"(nominal disc.Mdot = {Mdot_nominal:.4e} Msun/yr, ratio {Mdot / Mdot_nominal:.3g})")
     print(f"    viscous time at Rd: t_nu = Rd^2 / (3 (2-gamma)^2 nu(Rd)) = {t_visc_Rd:.4e} yr")
-    print(f"    NOTE: the output filename's 'Mdot' token is the NOMINAL disc.Mdot; the real initial "
-          f"Mdot is stored in HDF5 attr calib_Mdot.")
+    # (Hof, 2026-10-19) the filename now carries the COMPUTED Mdot in this mode (run_model_Hof.output_filename())
+    print(f"    NOTE: the output filename's 'Mdot' token is this COMPUTED initial Mdot ({Mdot:.1e} Msun/yr), "
+          f"not the nominal disc.Mdot; the full value is stored in HDF5 attr calib_Mdot.")
     # (Hof, 2026-10-08) replaces the old "Mdot <= 0 -> warn but proceed" message: Mdot <= 0
     # is now one case of "out of range" and the run is NOT evolved (no exception raised).
     # (Hof, 2026-10-19) bounds now come from calibration.Mdot_valid_range (or the default);
