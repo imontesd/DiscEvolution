@@ -120,6 +120,16 @@ LOG OF CHANGES (relative to disc_setup.py)
  New info key 'Mdot_range_check' (bool; False when disabled with null). info['Mdot_valid_range']
  is always a [lo, hi] list (Msun/yr; [-inf, inf] when disabled), so run_model_Hof.py's
  write_not_run_file() and its messages work unchanged.
+-(2026-10-20) New gravitational-instability (GI) flag for the INITIAL disc: Q_CRIT_GI = 1.5,
+ toomre_q() and gi_check_toomre(). Toomre (1964) Q = c_s Omega / (pi G Sigma), as quoted by
+ Balogh et al. (2026) Eq. 48, evaluated directly on the code's initial disc (gas Sigma_G, EOS sound
+ speed, Keplerian Omega; code units with G = 1), cell by cell over the whole grid. Flagged if
+ Q < 1.5 (Balogh et al.'s stability threshold) anywhere; the radii where the disc enters and leaves
+ the unstable region (Q = 1.5 crossings) are reported. Nothing is stopped: run_model_Hof.py stores
+ the result as HDF5 attrs (GI_flag, Q_toomre_min, Q_toomre_R_au, GI_R_in_au, GI_R_out_au,
+ GI_n_regions, Q_toomre_crit, Q_toomre_def). Why: the code has no self-gravity, and the Malanga et
+ al. (2026) population contains very massive discs (130/500 with M0 > 0.1 M*, 2 with M0 > M*),
+ which the analysis must be able to identify.
 -(2026-10-19) Comments / printed NOTE only (no code change here): in solve_for = 'none' mode the
  output filename's "_Mdot" token is now the COMPUTED initial Mdot (info['Mdot'], Msun/yr),
  picked up by run_model_Hof.output_filename() from run_config['calibration_result']. disc.Mdot
@@ -626,6 +636,96 @@ def _mdot_valid_range_from_calib(calib):
     if not (0.0 <= lo < hi):
         raise ValueError(f"calibration.Mdot_valid_range needs 0 <= lo < hi (Msun/yr), got [{lo}, {hi}]")
     return (lo, hi), True
+
+
+# ============================================================================
+# (Hof, 2026-10-20) Gravitational-instability (GI) flag of the INITIAL disc
+# ============================================================================
+# DiscEvolution has no self-gravity, so a disc that is gravitationally unstable is evolved as if
+# it were stable. Rather than stopping such runs, we FLAG them so the analysis can identify them.
+#
+# Criterion: the Toomre (1964) Q parameter, in the form quoted by Balogh et al. (2026), Eq. 48
+# (their Sec. 3.2, p. 11):
+#     Q(r) = c_s Omega / (pi G Sigma)   >~ 1.5  for stability                       [dimensionless]
+# evaluated DIRECTLY on the code's initial disc, cell by cell:
+#   * Sigma  = initial GAS surface density Sigma_G(r) [g/cm^2] (includes the exp(-r/r_c) cut-off and
+#              the code's normalisation of the mass to M0 on the grid);
+#   * c_s    = initial sound speed from the EOS (IrradiatedEOS temperature) [code units, AU / t_code];
+#   * Omega  = Keplerian Omega_K(r) of the star [1 / t_code]  (code units: G = AU = Msun = 1, so
+#              Sigma is converted to Msun/AU^2 and G = 1).
+# (Balogh et al.'s Eq. 49 is this same Q with an approximate Sigma and H/r; using Eq. 48 directly
+#  avoids those approximations.)
+# A disc is FLAGGED if Q < Q_CRIT_GI = 1.5 (Balogh et al.'s stability threshold) anywhere on the
+# grid. The unstable region is the set of cells with Q < 1.5; we report where the disc ENTERS it
+# going outward (GI_R_in_au: the innermost crossing of Q = 1.5) and where it LEAVES it
+# (GI_R_out_au: the outermost crossing). Crossings are linearly interpolated in log Q between cell
+# centres; if the first (last) grid cell is already unstable, the grid edge R_c[0] (R_c[-1]) is
+# reported. If there are several separate unstable annuli, R_in / R_out bracket all of them and
+# 'GI_n_regions' counts them.
+Q_CRIT_GI = 1.5          # dimensionless; GI flag raised if Q (Toomre 1964; Balogh et al. 2026 Eq. 48) < Q_CRIT_GI
+
+
+def toomre_q(Sigma_g, cs, Omega_k):
+    """
+    (Hof, 2026-10-20) Toomre (1964) Q = c_s Omega / (pi G Sigma) (Balogh et al. 2026, Eq. 48).
+    Sigma_g [g/cm^2]; cs [AU per code-time unit] and Omega_k [per code-time unit] in DiscEvolution
+    code units (G = AU = Msun = 1, code time = yr / 2pi). Sigma is converted to Msun/AU^2 so G = 1.
+    Returns Q [dimensionless] (inf where Sigma = 0, i.e. trivially stable).
+    """
+    Sigma_code = np.asarray(Sigma_g, dtype=float) * AU ** 2 / Msun          # Msun / AU^2
+    with np.errstate(divide='ignore'):
+        return np.asarray(cs) * np.asarray(Omega_k) / (np.pi * Sigma_code)
+
+
+def gi_check_toomre(R, Sigma_g, cs, Omega_k, Q_crit=Q_CRIT_GI):
+    """
+    (Hof, 2026-10-20) Gravitational-instability flag of a disc (see the comment block above).
+
+    Parameters: R [AU] grid cell centres; Sigma_g [g/cm^2], cs [AU/t_code], Omega_k [1/t_code] on
+    the same cells (code units as in toomre_q); Q_crit [dimensionless].
+
+    Returns dict:
+        'Q_min'        min of Q(r) over the grid (dimensionless)
+        'R_Qmin_au'    radius of that minimum [AU]
+        'GI_flag'      True if Q < Q_crit anywhere (bool)
+        'GI_R_in_au'   radius where the disc ENTERS the unstable region going outward (innermost
+                       crossing of Q = Q_crit) [AU]; NaN if not flagged
+        'GI_R_out_au'  radius where it LEAVES it (outermost crossing) [AU]; NaN if not flagged
+        'GI_n_regions' number of separate unstable annuli (int; 0 if not flagged)
+        'Q_crit'       the threshold used (dimensionless)
+        'Q_def'        one-line description of the criterion (str, stored with the result)
+    """
+    R = np.asarray(R, dtype=float)
+    Q = toomre_q(Sigma_g, cs, Omega_k)
+    lnQ, lnQc = np.log(Q), np.log(Q_crit)
+    unstable = Q < Q_crit
+    i_min = int(np.argmin(Q))
+
+    def crossing(i_stable, i_unstable):
+        """R [AU] where ln Q crosses ln Q_crit between two neighbouring cells (linear in ln Q)."""
+        f = (lnQc - lnQ[i_stable]) / (lnQ[i_unstable] - lnQ[i_stable])
+        return float(R[i_stable] + f * (R[i_unstable] - R[i_stable]))
+
+    if unstable.any():
+        idx = np.flatnonzero(unstable)
+        j, k = idx[0], idx[-1]                                       # first / last unstable cell
+        R_in = float(R[0]) if j == 0 else crossing(j - 1, j)         # AU
+        R_out = float(R[-1]) if k == len(R) - 1 else crossing(k + 1, k)
+        n_regions = int(1 + np.count_nonzero(np.diff(idx) > 1))
+    else:
+        R_in = R_out = np.nan
+        n_regions = 0
+    return {
+        'Q_min': float(Q[i_min]),
+        'R_Qmin_au': float(R[i_min]),
+        'GI_flag': bool(unstable.any()),
+        'GI_R_in_au': R_in,
+        'GI_R_out_au': R_out,
+        'GI_n_regions': n_regions,
+        'Q_crit': float(Q_crit),
+        'Q_def': "Toomre (1964) Q = c_s Omega / (pi G Sigma_gas) (Balogh et al. 2026 Eq. 48) on the initial "
+                 "disc, all grid cells; flag if Q < Q_crit anywhere",
+    }
 
 
 def _fixed_initial_disc(grid, star, config, kappa):
