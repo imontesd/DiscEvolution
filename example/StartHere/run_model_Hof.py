@@ -218,6 +218,18 @@ with one further addition -- see that file's own docstring.)
  disc.Mdot itself, HDF5 attr calib_Mdot_target (nominal) and every other mode's filename are
  unchanged. Files from earlier 'none' sweeps keep their old (nominal) names, so re-launching
  such a sweep would re-run them. See output_filename() for details.
+-(2026-10-20) Gravitational-instability (GI) flag of the INITIAL disc. New functions
+ initial_gi_check() and write_gi_attrs(), using disc_setup_Hof.gi_check_toomre():
+ Toomre (1964) Q = c_s Omega / (pi G Sigma), as in Balogh et al. (2026) Eq. 48, on every grid cell of
+ the initial disc (gas Sigma_G, sound speed and Keplerian Omega of the disc, right after the dust
+ wrapper is built, step 4b). A disc is flagged if Q < 1.5 anywhere. The run is NOT stopped (no
+ self-gravity in the code); the check is printed after set-up and stored as HDF5 attrs
+     GI_flag (bool), Q_toomre_min (dimensionless), Q_toomre_R_au (AU, where Q is smallest),
+     GI_R_in_au / GI_R_out_au (AU, where the disc enters / leaves the unstable region Q < 1.5;
+     NaN if not flagged), GI_n_regions (int), Q_toomre_crit (= 1.5), Q_toomre_def (str)
+ in every evolved run AND in "not run" files (write_not_run_file() has a new optional gi argument;
+ there the total initial Sigma stands in for the gas Sigma, ~1 % higher). Files written before this
+ change have no such attrs; Hof_malanga_comparison.ipynb recomputes them from Sigma_G[0] and T[0].
 
 WHAT THIS RUNS
 --------------
@@ -305,6 +317,7 @@ from disc_setup_Hof import (
     steady_state_alpha_guess,   # TOTAL alpha guess (dimensionless) for disc.alpha = 'SS' in the no-calibration path
     solve_initial_disc,         # generic root-finder, used when the config HAS a "calibration" section
     _SOLVABLE_PARAMS,           # only used to list the valid solve_for names in the "no calibration" NOTE
+    gi_check_toomre,            # (Hof, 2026-10-20) Toomre-Q GI flag of the initial disc (Balogh et al. 2026, Eq. 48)
 )
 
 GAS_SOLVER = ViscousEvolutionFV   # viscous-evolution scheme used when winds are off
@@ -602,7 +615,39 @@ def grow_and_set(dset, value):
     dset[n] = value
 
 
-def write_not_run_file(outfile, config, calib, run_start):
+def initial_gi_check(grid, disc):
+    """
+    (Hof, 2026-10-20) Gravitational-instability (GI) flag of the INITIAL disc: Toomre (1964)
+    Q = c_s Omega / (pi G Sigma), as in Balogh et al. (2026) Eq. 48, evaluated on every grid cell
+    with the disc's gas surface density disc.Sigma_G [g/cm^2], sound speed disc.cs and Keplerian
+    disc.Omega_k (code units), see disc_setup_Hof.gi_check_toomre. Flag if Q < 1.5 anywhere; also
+    reports where the disc enters / leaves the unstable region. Only reports: the run is NOT stopped
+    (DiscEvolution has no self-gravity, so a flagged disc is evolved as if stable).
+    Returns gi_check_toomre()'s dict.
+    """
+    gi = gi_check_toomre(grid.Rc, disc.Sigma_G, disc.cs, disc.Omega_k)
+    msg = (f"GI check (Toomre Q = c_s Omega / (pi G Sigma), Balogh et al. 2026 Eq. 48): "
+           f"Q_min = {gi['Q_min']:.3g} at r = {gi['R_Qmin_au']:.3g} AU -> GI_flag = {gi['GI_flag']}")
+    if gi['GI_flag']:
+        msg += (f"; Q < {gi['Q_crit']:g} from r = {gi['GI_R_in_au']:.3g} AU to {gi['GI_R_out_au']:.3g} AU "
+                f"({gi['GI_n_regions']} region(s))")
+    print(msg + " (run continues either way)")
+    return gi
+
+
+def write_gi_attrs(h5f, gi):
+    """(Hof, 2026-10-20) Store the initial-disc GI check (initial_gi_check) as HDF5 attrs."""
+    h5f.attrs["GI_flag"] = bool(gi['GI_flag'])                 # True: Q < Q_toomre_crit somewhere
+    h5f.attrs["Q_toomre_min"] = float(gi['Q_min'])             # dimensionless, Toomre Q (Balogh+26 Eq. 48)
+    h5f.attrs["Q_toomre_R_au"] = float(gi['R_Qmin_au'])        # AU, radius of the minimum
+    h5f.attrs["GI_R_in_au"] = float(gi['GI_R_in_au'])          # AU, where the unstable region is entered (NaN if none)
+    h5f.attrs["GI_R_out_au"] = float(gi['GI_R_out_au'])        # AU, where it is left (NaN if none)
+    h5f.attrs["GI_n_regions"] = int(gi['GI_n_regions'])        # number of separate unstable annuli
+    h5f.attrs["Q_toomre_crit"] = float(gi['Q_crit'])           # dimensionless threshold (1.5)
+    h5f.attrs["Q_toomre_def"] = gi['Q_def']                    # str, how Q was computed
+
+
+def write_not_run_file(outfile, config, calib, run_start, gi=None):
     """
     (Hof, 2026-10-08) Write a FLAGGED "not run" output file for a solve_for = 'none' run
     whose initial inner Mdot is outside disc_setup_Hof.MDOT_VALID_RANGE_NONE (Msun/yr).
@@ -642,6 +687,8 @@ def write_not_run_file(outfile, config, calib, run_start):
         h5f.attrs["run_start"] = run_start.isoformat(timespec="seconds")
         h5f.attrs["run_end"] = datetime.now().replace(microsecond=0).isoformat(timespec="seconds")
         h5f.attrs["config_json"] = json.dumps(config, default=str)
+        if gi is not None:                                                  # (Hof, 2026-10-20) GI flag
+            write_gi_attrs(h5f, gi)
 
 
 def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
@@ -1022,7 +1069,11 @@ def run_model(config, cli_output_dir=None):
     # exception -> exit code 0), so run_popsynth_Hof.sh (set -e) carries on with the next
     # combination. Other solve_for modes have no 'Mdot_in_range' key -> treated as in range.
     if calib is not None and not calib['info'].get('Mdot_in_range', True):
-        write_not_run_file(outfile, config, calib, run_start)
+        # (Hof, 2026-10-20) GI flag also recorded for a disc that is not evolved. No dust wrapper
+        # exists here, so the solved initial disc's total Sigma is used as the gas Sigma (the dust
+        # fraction, d2g = 0.01, would lower Sigma_G by ~1 % in an evolved run)
+        write_not_run_file(outfile, config, calib, run_start,
+                           gi=initial_gi_check(grid, calib['disc']))
         print("\n" + "=" * 70)
         print(f"Run NOT evolved: {os.path.basename(outfile)}")
         print(f"  initial Mdot = {calib['info']['Mdot']:.4e} Msun/yr is outside "
@@ -1087,6 +1138,10 @@ def run_model(config, cli_output_dir=None):
     gas, dust, diffuse = build_transport(transport_params, wind_params, disc_params,
                                           dust_growth_params, lambda_DW)
     disc = build_dust_growth_disc(grid, star, eos, Sigma, disc_params, dust_growth_params, gas)
+    # ---- 4b. (Hof, 2026-10-20) gravitational-instability flag of the initial disc (report only) ----
+    # after the dust wrapper, so Sigma_G is the GAS surface density -- the same quantity the t = 0
+    # snapshot stores in Sigma_G[0], so the flag can be recomputed exactly from the output file
+    gi = initial_gi_check(grid, disc)
 
     # ---- 5. chemistry ----
     chemistry, Natom, Nmol = build_chemistry(disc, chemistry_params, disc_params["d2g"],
@@ -1125,6 +1180,7 @@ def run_model(config, cli_output_dir=None):
         # (Hof) which alpha was held fixed during a psi_DW solve: 'alpha' (total) or 'alpha_SS' (viscous)
         h5f.attrs["calib_hold"] = info['hold']
         h5f.attrs["calib_alpha_SS_fixed"] = info['alpha_SS_fixed']   # dimensionless; NaN when calib_hold = 'alpha'
+    write_gi_attrs(h5f, gi)                                  # (Hof, 2026-10-20) GI flag of the initial disc
     try:
         _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, diffuse,
                    chemistry, times, config)
