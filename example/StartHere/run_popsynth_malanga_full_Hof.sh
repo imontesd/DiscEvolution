@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=def-mbalogh
-#SBATCH --time=0-04:00:00            # pilot: slowest disc 1.2 h; 500 discs / 192 slots = 3 waves (~1.5-2 h)
-#SBATCH --cpus-per-task=192          # must equal NPROC below, and fit on ONE node
+#SBATCH --time=0-05:00:00            # pilot: slowest disc 1.2 h; 500 discs / 192 slots = 3 waves (~1.5-2 h)
+#SBATCH --cpus-per-task=150          # must equal NPROC below, and fit on ONE node
 #SBATCH --mem-per-cpu=500M           # 500 MB per CPU -> 192 x 0.5 GB = 96 GB for the job (RAM, not disk);
                                      # measured peak ~120 MB per run (/usr/bin/time -v, typical and most
                                      # compact disc), so ~23 GB in use with 192 runs at once
@@ -71,7 +71,7 @@ OUTDIR="${OUTDIR:-$OUTPUT_ROOT/popsynth/malanga}"           # .h5 files + config
 LOGS_ROOT="$OUTPUT_ROOT/logs"   # shared logs folder: nothing is written DIRECTLY here
 LOGDIR="${LOGDIR:-$LOGS_ROOT/malanga-comparison}"   # this sweep's folder: Slurm output, job list, joblog
 RUNLOGDIR="$LOGDIR/run_logs"     # (Hof, 2026-10-19) per-disc .out/.err logs, one pair per disc
-NPROC="${NPROC:-192}"            # runs at once; keep equal to --cpus-per-task above
+NPROC="${NPROC:-150}"            # runs at once; keep equal to --cpus-per-task above
 # (Hof, 2026-10-20) no FIRST_ID / LAST_ID / IDS here: the full run always takes EVERY disc
 for v in FIRST_ID LAST_ID IDS; do
     if [[ -n "${!v:-}" ]]; then
