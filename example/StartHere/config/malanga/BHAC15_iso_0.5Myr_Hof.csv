@@ -1,0 +1,43 @@
+# (Hof Co-op project, 2026-10-26) BHAC15 pre-main-sequence isochrone at t = 0.5 Myr.
+# Source: Baraffe, Homeier, Allard & Chabrier (2015), A&A 577, A42 ("BHAC15").
+# File:   http://perso.ens-lyon.fr/isabelle.baraffe/BHAC15dir/BHAC15_iso.2mass
+# Block:  the FIRST isochrone of that file, labelled "t (Gyr) =   0.0005" (= 0.5 Myr).
+# Values copied verbatim from the file. Kept columns (file header "M/Ms Teff L/Ls g R/Rs"):
+#   M_Msun      stellar mass [Msun]
+#   Teff_K      effective temperature [K]
+#   logL_Lsun   log10 of luminosity [Lsun]
+#   logg_cgs    log10 of surface gravity [cm s^-2]
+#   R_Rsun      stellar radius [Rsun]
+# Dropped columns: Li/Li0 (all 1.000 in this block) and the 2MASS magnitudes Mj, Mh, Mk.
+# Used by stellar_props_Hof.py (R* and Teff vs M*, linear interpolation in log-log).
+M_Msun,Teff_K,logL_Lsun,logg_cgs,R_Rsun
+0.010,2387,-2.47,3.38,0.339
+0.015,2514,-2.21,3.38,0.413
+0.020,2594,-2.05,3.40,0.466
+0.030,2668,-1.79,3.36,0.599
+0.040,2733,-1.66,3.40,0.661
+0.050,2762,-1.48,3.34,0.791
+0.060,2808,-1.40,3.37,0.841
+0.070,2835,-1.33,3.37,0.900
+0.072,2832,-1.29,3.35,0.937
+0.075,2836,-1.27,3.34,0.966
+0.080,2837,-1.20,3.31,1.040
+0.090,2864,-1.13,3.31,1.101
+0.100,2925,-1.15,3.41,1.033
+0.110,2945,-1.07,3.38,1.115
+0.130,3006,-0.93,3.34,1.270
+0.150,3076,-0.79,3.31,1.412
+0.170,3139,-0.67,3.28,1.565
+0.200,3220,-0.54,3.26,1.728
+0.300,3460,-0.20,3.23,2.203
+0.400,3670,-0.05,3.30,2.338
+0.500,3848,0.07,3.36,2.444
+0.600,3987,0.16,3.41,2.524
+0.700,4110,0.26,3.43,2.657
+0.800,4221,0.35,3.44,2.805
+0.900,4315,0.43,3.45,2.944
+1.000,4397,0.50,3.46,3.079
+1.100,4471,0.57,3.47,3.209
+1.200,4537,0.63,3.47,3.344
+1.300,4596,0.68,3.47,3.469
+1.400,4647,0.74,3.47,3.601
