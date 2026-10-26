@@ -1,0 +1,78 @@
+# (Hof Co-op project, 2026-10-26) Measured stellar masses of the Lupus disc sample.
+# Source: Malanga et al. (2026), "DEMOS. II", Table A.1 (pp. 15-16), column log M*.
+# Only the 65 sources with a MEASURED M* are kept (Alcala et al. 2014, 2017; Malanga p. 3).
+# The 24 sources listed as "<0.50" are dropped: that value is Malanga's non-informative upper
+# limit (3 Msun, p. 3), not a measurement.
+# Columns:
+#   index_A1      source index in Malanga Table A.1 (also the label in their Fig. 1)
+#   source        source name as printed in Table A.1
+#   log_Mstar     log10(M* / Msun), as printed
+# Note: these are disc-bearing stars only (survivors), so the disc fraction per M* bin
+# (Malanga App. C) cannot be recovered from a population drawn from this list.
+# Used by sample_malanga_mstar_Hof.py (bootstrap of M*, exact values, no jitter).
+index_A1,source,log_Mstar
+1,Sz65,-0.21
+2,Sz66,-0.54
+5,J15445789-3423392,-1.06
+7,J15450887-3417333,-1.04
+8,Sz69,-0.82
+9,Sz71,-0.38
+10,Sz72,-0.43
+11,Sz73,-0.15
+12,Sz76,-0.73
+13,Sz81A,-0.73
+15,Sz82 / IM Lup,-0.14
+16,Sz83 / RU Lup,-0.26
+17,Sz84,-0.83
+18,Sz129,-0.14
+19,J15592523-4235066,-1.07
+20,RYLup,0.10
+21,J16000060-4221567,-0.83
+22,J16000236-4222145,-0.72
+23,J16002612-4153553,-0.97
+24,Sz130,-0.40
+25,MYLup,0.08
+26,Sz131,-0.52
+28,EXLup,-0.24
+32,Sz90,-0.14
+33,Sz91,-0.28
+34,J16073773-3921388,-1.17
+35,Sz95,-0.54
+37,J16080017-3902595,-1.11
+39,Sz96,-0.33
+40,J16081497-3857145,-1.19
+41,Sz97,-0.71
+42,Sz98,-0.26
+43,Sz99,-0.74
+44,Sz100,-0.89
+45,J160828.1-391310,-1.15
+47,Sz103,-0.71
+48,J16083070-3828268,0.10
+49,Sz104,-0.97
+51,V1094Sco,-0.19
+52,Sz106,-0.26
+53,Sz108B,-0.91
+55,Sz110,-0.72
+56,J16085324-3914401,-0.54
+57,J16085373-3914367,-1.17
+58,Sz111,-0.28
+59,J16085529-3848481,-1.15
+60,Sz112,-0.87
+61,Sz113,-0.87
+64,J16090141-3925119,-0.70
+65,Sz114,-0.80
+66,Sz115,-0.82
+70,J16092697-3836269,-0.83
+73,Sz117,-0.63
+74,Sz118,-0.08
+75,J16100133-3906449,-1.00
+77,J16101857-3836125,-1.02
+78,J16101984-3836065,-1.21
+80,J16102955-3922144,-0.82
+83,J16124373-3815031,-0.33
+84,J16134410-3736462,-1.02
+85,AKC2006-18,-1.36
+86,J154518.5-342125,-1.21
+87,Lup706,-1.37
+88,SONYC-Lup3-7,-1.64
+89,SONYC-Lup3-10,-1.64
