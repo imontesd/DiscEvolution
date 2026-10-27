@@ -230,19 +230,27 @@ with one further addition -- see that file's own docstring.)
  in every evolved run AND in "not run" files (write_not_run_file() has a new optional gi argument;
  there the total initial Sigma stands in for the gas Sigma, ~1 % higher). Files written before this
  change have no such attrs; Hof_malanga_comparison.ipynb recomputes them from Sigma_G[0] and T[0].
--(2026-10-26) Per-run STAR and GRID INNER EDGE, for the Malanga population with a per-disc stellar
- mass (sample_malanga_mstar_Hof.py; R* and Teff from the BHAC15 0.5 Myr isochrone and r_min(R*)
- from stellar_props_Hof.py). In THIS file:
+-(2026-10-26) Per-run STAR and GRID EDGES, for the Malanga population with a per-disc stellar
+ mass (sample_malanga_mstar_Hof.py; R* and Teff from the BHAC15 0.5 Myr isochrone, grid edges
+ from each disc's R0: r_min = max(min(0.16 R0, 0.1 AU), 0.03 AU), r_max = min(400 R0, 1000 AU)).
+ [(2026-10-27) the sampler's r_min rule is now max(min(R_T, 0.16 R0), 0.03 AU), with R_T the
+ magnetospheric truncation radius of Konigl (1991) Eq. 1 (B* = 0.5 kG equatorial, beta = 0.5;
+ stellar_props_Hof.truncation_radius_Konigl_Hof). Nothing changed in THIS file for that: r_min still
+ arrives through --rmin.]
+ In THIS file:
    * new CLI flags, routed through the same `overrides` dict as the other flags (so they are
      printed and recorded in the logged config):
          --Mstar <Msun>  -> star.M        --Rstar <Rsun> -> star.R
-         --Teff  <K>     -> star.T_eff    --rmin  <AU>   -> grid.rmin
-     disc_setup_Hof._build_grid_star_kappa() then builds Grid(rmin, ...) and
+         --Teff  <K>     -> star.T_eff    --rmin  <AU>   -> grid.rmin    --rmax <AU> -> grid.rmax
+     (--rmax: on a fixed 250 AU grid the initial Sigma ~ exp(-R/R0) underflows to exactly 0 beyond
+     ~745 R0, and the IrradiatedEOS temperature solve then fails for R0 < ~0.34 AU; r_max <= 400 R0
+     avoids that. grid.nr is unchanged.)
+     disc_setup_Hof._build_grid_star_kappa() then builds Grid(rmin, rmax, ...) and
      SimpleStar(M=, R=, T_eff=) from them unchanged. Every physics path already uses the star
      object (IrradiatedEOS irradiation and H, Omega_K, GI check, dust, planets), so nothing else
      needed changing. Without the flags, runs are exactly as before;
    * new write_star_grid_attrs(): HDF5 attrs Mstar_Msun [Msun], Rstar_Rsun [Rsun], Teff_K [K],
-     Lstar_Lsun [Lsun, = R*^2 (Teff/5772 K)^4] and grid_rmin_au [AU], written in EVERY output
+     Lstar_Lsun [Lsun, = R*^2 (Teff/5772 K)^4], grid_rmin_au and grid_rmax_au [AU], written in EVERY output
      file (create_output_file() and write_not_run_file()). Before this change the star was only
      recorded in config_log/<stem>.json (and in config_json of "not run" files);
    * output_filename(): new "_Ms{M*:.4g}" token right after "_erad...", ONLY when star.M != 1.0
@@ -250,8 +258,8 @@ with one further addition -- see that file's own docstring.)
      M* = 1) is unchanged. Placed there so the existing regexes still parse: "_M([0-9.eE+-]+)"
      skips "_Ms" ('s' is not in the class), "_aSS(...)_Mdot" and HJpaper's "_Rd(...)(?=\\.h5$)"
      keep their neighbours. To extract it:  re.search(r"_Ms([0-9.eE+-]+)_", name).group(1) [Msun].
-     R*, Teff and r_min are NOT in the filename (they follow from M* in this workflow; read the
-     HDF5 attrs). Runs differing only in R*, Teff or r_min would therefore collide.
+     R*, Teff, r_min and r_max are NOT in the filename (R*, Teff follow from M*, the grid edges
+     from Rd, in this workflow; read the HDF5 attrs). Runs differing only in them would collide.
 
 WHAT THIS RUNS
 --------------
@@ -680,7 +688,8 @@ def write_star_grid_attrs(h5f, config):
         Teff_K      [K]      config['star']['T_eff']
         Lstar_Lsun  [Lsun]   R*^2 (Teff / 5772 K)^4  (stellar_props_Hof.Lstar_from_R_Teff_Hof)
         grid_rmin_au [AU]    config['grid']['rmin']
-    These are exactly the values passed to SimpleStar(M=, R=, T_eff=) and Grid(rmin, ...) in
+        grid_rmax_au [AU]    config['grid']['rmax']
+    These are exactly the values passed to SimpleStar(M=, R=, T_eff=) and Grid(rmin, rmax, ...) in
     disc_setup_Hof._build_grid_star_kappa().
     """
     star_params = config['star']
@@ -689,6 +698,7 @@ def write_star_grid_attrs(h5f, config):
     h5f.attrs["Teff_K"] = float(star_params['T_eff'])                    # K
     h5f.attrs["Lstar_Lsun"] = float(Lstar_from_R_Teff_Hof(star_params['R'], star_params['T_eff']))   # Lsun
     h5f.attrs["grid_rmin_au"] = float(config['grid']['rmin'])            # AU
+    h5f.attrs["grid_rmax_au"] = float(config['grid']['rmax'])            # AU
 
 
 def write_not_run_file(outfile, config, calib, run_start, gi=None):
@@ -708,8 +718,8 @@ def write_not_run_file(outfile, config, calib, run_start, gi=None):
         alpha_total, alpha_SS                       dimensionless
         run_start, run_end  ISO 8601 local time (same convention as a normal run)
         config_json         the full run config (json string), for traceability
-        Mstar_Msun, Rstar_Rsun, Teff_K, Lstar_Lsun, grid_rmin_au   (Hof, 2026-10-26) star and
-                            grid inner edge; see write_star_grid_attrs()
+        Mstar_Msun, Rstar_Rsun, Teff_K, Lstar_Lsun, grid_rmin_au, grid_rmax_au   (Hof, 2026-10-26)
+                            star and grid edges; see write_star_grid_attrs()
     psi_DW / e_rad / gamma / M / Mdot / Rd are recoverable from the filename as usual.
     """
     info = calib['info']
@@ -735,7 +745,7 @@ def write_not_run_file(outfile, config, calib, run_start, gi=None):
         h5f.attrs["config_json"] = json.dumps(config, default=str)
         if gi is not None:                                                  # (Hof, 2026-10-20) GI flag
             write_gi_attrs(h5f, gi)
-        write_star_grid_attrs(h5f, config)                                  # (Hof, 2026-10-26) M*, R*, Teff, L*, r_min
+        write_star_grid_attrs(h5f, config)                                  # (Hof, 2026-10-26) M*, R*, Teff, L*, r_min, r_max
 
 
 def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
@@ -751,7 +761,7 @@ def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
 
     h5f = h5py.File(outfile, "w")
     h5f.attrs["alpha_SS"] = float(alpha_SS)
-    write_star_grid_attrs(h5f, config)       # (Hof, 2026-10-26) M* [Msun], R* [Rsun], Teff [K], L* [Lsun], r_min [AU]
+    write_star_grid_attrs(h5f, config)       # (Hof, 2026-10-26) M* [Msun], R* [Rsun], Teff [K], L* [Lsun], r_min, r_max [AU]
 
     # ---- scalar time series (one number per snapshot) ----
     for name in ["t", "disk_Mdot_star", "disk_Mass", "Tc", "Sigc"]:
@@ -1452,9 +1462,9 @@ Examples:
     # random draw (run_popsynth_malanga_Hof.sh passes e.g. "hof_malanga_w0_0042")
     parser.add_argument("--run_name", type=str, default=None,
                         help="Override simulation.run_name (prefix of the output filename and config-log name)")
-    # (Hof, 2026-10-26) per-run star and grid inner edge, for the Malanga population with a
-    # per-disc stellar mass (sample_malanga_mstar_Hof.py writes M*, R*, Teff, r_min per disc;
-    # R* and Teff from the BHAC15 0.5 Myr isochrone, r_min(R*) from stellar_props_Hof.py)
+    # (Hof, 2026-10-26) per-run star and grid edges, for the Malanga population with a per-disc
+    # stellar mass (sample_malanga_mstar_Hof.py writes M*, R*, Teff, r_min, r_max per disc;
+    # R* and Teff from the BHAC15 0.5 Myr isochrone, r_min and r_max from each disc's R0)
     parser.add_argument("--Mstar", type=float, default=None,
                         help="Override star.M (stellar mass) [Msun]; adds '_Ms<M*>' to the filename if != 1")
     parser.add_argument("--Rstar", type=float, default=None,
@@ -1463,6 +1473,8 @@ Examples:
                         help="Override star.T_eff (stellar effective temperature) [K]")
     parser.add_argument("--rmin", type=float, default=None,
                         help="Override grid.rmin (inner edge of the radial grid) [AU]")
+    parser.add_argument("--rmax", type=float, default=None,
+                        help="Override grid.rmax (outer edge of the radial grid) [AU]")
 
     args = parser.parse_args()
 
@@ -1484,6 +1496,7 @@ Examples:
         ("star", "R"): args.Rstar,          # (Hof, 2026-10-26) Rsun
         ("star", "T_eff"): args.Teff,       # (Hof, 2026-10-26) K
         ("grid", "rmin"): args.rmin,        # (Hof, 2026-10-26) AU, inner edge of the grid
+        ("grid", "rmax"): args.rmax,        # (Hof, 2026-10-26) AU, outer edge of the grid
     }
     for (section, key), value in overrides.items():
         if value is not None:
