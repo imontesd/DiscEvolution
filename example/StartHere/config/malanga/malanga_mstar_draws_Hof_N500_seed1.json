@@ -1,0 +1,69 @@
+{
+  "created": "2026-10-26T17:15:23",
+  "script": "sample_malanga_mstar_Hof.py",
+  "git_commit": "0fd76310",
+  "N": 500,
+  "seed": 1,
+  "alpha_SS": 0.0001,
+  "Mstar_source": "config/malanga/lupus_TableA1_Mstar_Hof.csv (Malanga et al. 2026 Table A.1, 65 measured M*, bootstrap, exact values)",
+  "star_source": "config/malanga/BHAC15_iso_0.5Myr_Hof.csv (BHAC15, 0.5 Myr isochrone, linear interpolation in log-log)",
+  "grid_rule": {
+    "rmin_frac_R0": 0.16,
+    "rmin_cap_au": 0.1,
+    "rmin_floor_au": 0.03,
+    "rmax_frac_R0": 400.0,
+    "rmax_cap_au": 1000.0,
+    "formula": "r_min = max(min(0.16 R0, 0.1 au), 0.03 au); r_max = min(400 R0, 1000 au); nr from the config"
+  },
+  "psi_floor": "psi_DW = max(alpha_DW / alpha_SS - 1, 0); floored discs: e_rad = 1, lambda = inf (no wind)",
+  "R0_rule": "R0 < r_min is clipped to r_min (flag_R0_clipped)",
+  "lambda_rule": "Balogh et al. (2026) Eq. 16 with e_rad from relation D (xi from Malanga Eq. 6)",
+  "TABLE2": {
+    "M0": {
+      "log10_median": -2.3,
+      "lambda": 2.0,
+      "sigma_dex": 0.4,
+      "units": "Msun"
+    },
+    "R0": {
+      "log10_median": 0.7,
+      "lambda": 1.0,
+      "sigma_dex": 0.6,
+      "units": "au"
+    },
+    "alpha_DW": {
+      "log10_median": -3.4,
+      "lambda": 2.0,
+      "sigma_dex": 0.1,
+      "units": "dimensionless"
+    },
+    "f_M": {
+      "log10_value": -0.6,
+      "units": "dimensionless"
+    },
+    "t_age": {
+      "mean_Myr": 1.6,
+      "sigma_Myr": 0.3
+    }
+  },
+  "M_NORM_Msun": 0.3,
+  "R_IN_au": 0.03,
+  "T_FINAL_Myr": 3.0,
+  "SIG_FIGS": {
+    "M0": 4,
+    "R0": 4,
+    "psi_DW": 4,
+    "e_rad": 6,
+    "Mstar": 6,
+    "Rstar": 6,
+    "Teff": 6,
+    "rmin": 4,
+    "rmax": 4
+  },
+  "n_psi_floored": 219,
+  "n_R0_clipped": 0,
+  "n_lambda_lt_1p5": 12,
+  "n_offgrid_flagged": 1,
+  "n_t_age_redrawn": 0,
+  "lambda_roundtrip_max_relerr": 3.842678772780772e-05
+}
