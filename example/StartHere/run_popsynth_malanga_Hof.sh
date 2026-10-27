@@ -68,6 +68,9 @@
 #     |-- popsynth/malanga/                .h5 per disc, config_log/, population CSV + .json  (OUTDIR)
 #     `-- logs/malanga-comparison/         Slurm output, job list, joblog                     (LOGDIR)
 #         `-- run_logs/                    per-disc .out/.err                                 (RUNLOGDIR)
+# (Hof, 2026-10-27) Nothing is written to /home: the configs' own simulation.output_dir
+# (DiscConfig_Hof_malanga.json, DiscConfig_Hof_malanga_mstar.json) also points at scratch now, so even a
+# run_model_Hof.py call WITHOUT --output_dir writes there; the copy to /project is done by hand.
 # The code (SCRIPT_DIR) and the venv (VENV) stay on /project. Scratch is PURGED after a while
 # (see Nibi's scratch policy), so once the job has FINISHED copy the results to project, e.g.
 #     rsync -av /scratch/imontesd/output/DiscEvolution/ /project/def-mbalogh/imontesd/output/DiscEvolution/
