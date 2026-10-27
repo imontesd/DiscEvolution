@@ -32,6 +32,14 @@
 #   one run_model_Hof.py run per CSV row with --run_name hof_malanga_w0_<id> --M <M0 [Msun]>
 #   --Rd <R0 [au]> --psi_DW <psi> --e_rad <e_rad> --alpha_SS <alpha_SS>, config DiscConfig_Hof_malanga.json.
 #
+# (Hof, 2026-10-27) POPULATION=1msun (default, exactly as before) or POPULATION=mstar (per-disc star:
+# sample_malanga_mstar_Hof.py, DiscConfig_Hof_malanga_mstar.json, OUTDIR popsynth/malanga_mstar, LOGDIR
+# logs/malanga-comparison/mstar), with the same defaults and the same optional per-disc
+#     --Mstar <Msun> --Rstar <Rsun> --Teff <K> --rmin <au> --rmax <au>
+# as run_popsynth_malanga_Hof.sh (see its header). RUNTIME of the per-M* population is NOT yet known:
+# most of its discs have r_min = 0.03 au (vs 0.1 au for the 1 Msun runs), so smaller inner cells and
+# shorter timesteps. Size --time below from the per-M* pilot before submitting it.
+#
 # Output layout (scratch; same as the project output folder):
 #     /scratch/imontesd/output/DiscEvolution/
 #     |-- popsynth/malanga/                .h5 per disc, config_log/, population CSV + .json,
@@ -50,6 +58,7 @@
 #
 # Usage (Nibi; first: git pull, and mkdir -p the scratch folders above):
 #   sbatch run_popsynth_malanga_full_Hof.sh                      # all discs in the population CSV
+#   POPULATION=mstar sbatch run_popsynth_malanga_full_Hof.sh     # (2026-10-27) the per-M* population
 #   DRY_RUN=1 bash run_popsynth_malanga_full_Hof.sh | head       # check the commands, run nothing
 #   (paths can still be overridden from the environment, e.g. OUTPUT_ROOT=..., for local tests)
 
@@ -63,13 +72,22 @@ if [[ -f "$VENV/bin/activate" ]]; then source "$VENV/bin/activate"; fi
 # 1. Settings (each one overridable from the environment)
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="${SCRIPT_DIR:-/home/imontesd/projects/def-mbalogh/imontesd/DiscEvolution/example/StartHere}"
-CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/config/popsynth/DiscConfig_Hof_malanga.json}"
-DRAWS_CSV="${DRAWS_CSV:-$SCRIPT_DIR/config/malanga/malanga_draws_Hof_N500_seed1.csv}"   # from sample_malanga_Hof.py (population files live in config/malanga/)
 OUTPUT_ROOT="${OUTPUT_ROOT:-/scratch/imontesd/output/DiscEvolution}"   # (Hof, 2026-10-19) ALL outputs on scratch ($SCRATCH = /scratch/imontesd),
                                  # same layout as /project/def-mbalogh/imontesd/output/DiscEvolution
-OUTDIR="${OUTDIR:-$OUTPUT_ROOT/popsynth/malanga}"           # .h5 files + config_log/ + population copy
 LOGS_ROOT="$OUTPUT_ROOT/logs"   # shared logs folder: nothing is written DIRECTLY here
-LOGDIR="${LOGDIR:-$LOGS_ROOT/malanga-comparison}"   # this sweep's folder: Slurm output, job list, joblog
+# (Hof, 2026-10-27) population-dependent DEFAULTS (same as run_popsynth_malanga_Hof.sh); each overridable
+POPULATION="${POPULATION:-1msun}"
+case "$POPULATION" in
+    1msun) DEF_CONFIG="DiscConfig_Hof_malanga.json";       DEF_CSV="malanga_draws_Hof_N500_seed1.csv"
+           DEF_OUTSUB="malanga";                           DEF_LOGSUB="malanga-comparison" ;;
+    mstar) DEF_CONFIG="DiscConfig_Hof_malanga_mstar.json"; DEF_CSV="malanga_mstar_draws_Hof_N500_seed1.csv"
+           DEF_OUTSUB="malanga_mstar";                     DEF_LOGSUB="malanga-comparison/mstar" ;;
+    *)     echo "ERROR: POPULATION must be 1msun or mstar, got '$POPULATION'" >&2; exit 1 ;;
+esac
+CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/config/popsynth/$DEF_CONFIG}"
+DRAWS_CSV="${DRAWS_CSV:-$SCRIPT_DIR/config/malanga/$DEF_CSV}"   # from sample_malanga[_mstar]_Hof.py (population files live in config/malanga/)
+OUTDIR="${OUTDIR:-$OUTPUT_ROOT/popsynth/$DEF_OUTSUB}"           # .h5 files + config_log/ + population copy
+LOGDIR="${LOGDIR:-$LOGS_ROOT/$DEF_LOGSUB}"   # this sweep's folder: Slurm output, job list, joblog
 RUNLOGDIR="$LOGDIR/run_logs"     # (Hof, 2026-10-19) per-disc .out/.err logs, one pair per disc
 NPROC="${NPROC:-150}"            # runs at once; keep equal to --cpus-per-task above
 # (Hof, 2026-10-20) no FIRST_ID / LAST_ID / IDS here: the full run always takes EVERY disc
@@ -106,7 +124,8 @@ CSV_BASE="$(basename "$DRAWS_CSV")"
 is_prefix() {   # is_prefix A B: true if file A equals the first lines of file B
     head -n "$(wc -l < "$1")" "$2" | cmp -s - "$1"
 }
-for existing in "$OUTDIR"/malanga_draws_Hof_*.csv; do
+# (Hof, 2026-10-27) both population CSV names, so the 1 Msun and per-M* populations never share an OUTDIR
+for existing in "$OUTDIR"/malanga_draws_Hof_*.csv "$OUTDIR"/malanga_mstar_draws_Hof_*.csv; do
     [[ -e "$existing" ]] || continue
     if ! is_prefix "$existing" "$DRAWS_CSV" && ! is_prefix "$DRAWS_CSV" "$existing"; then
         echo "ERROR: $OUTDIR already holds a different population ($(basename "$existing"))." >&2
@@ -124,6 +143,7 @@ GIT_COMMIT=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unk
 GIT_BRANCH=$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
 GIT_DIRTY=$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null | wc -l)
 PROVENANCE="job ${SLURM_JOB_ID:-local} on $(hostname), started $(date '+%F %T')
+population type: $POPULATION
 code: $SCRIPT_DIR  branch $GIT_BRANCH  commit $GIT_COMMIT  uncommitted changes: $GIT_DIRTY file(s)
 config: $CONFIG_FILE
 population: $DRAWS_CSV"
@@ -156,21 +176,30 @@ if old:
           + (" ..." if len(old) > 20 else ""))
 EOF
 
-# Job list: one line per disc, "run_name M0 R0 psi e_rad alpha_SS", read BY COLUMN NAME (so a
-# change in the sampler's column order cannot pass the wrong value), values copied VERBATIM from
-# the CSV (4 significant figures; 6 for e_rad). ALL rows (no selection in the full run).
+# Job list: one line per disc, "run_name M0 R0 psi e_rad alpha_SS Mstar Rstar Teff rmin rmax", read BY
+# COLUMN NAME (so a change in the sampler's column order cannot pass the wrong value), values copied
+# VERBATIM from the CSV (4 significant figures; 6 for e_rad, M*, R*, Teff). ALL rows (no selection).
+# (Hof, 2026-10-27) The last five columns are "-" when the CSV has no star/grid columns (1 Msun population).
 JOBLIST="$LOGDIR/joblist_full_${CSV_BASE%.csv}.txt"
 python3 - "$DRAWS_CSV" > "$JOBLIST" <<'EOF'
 import csv, sys
 path = sys.argv[1]
 need = ["id", "run_name", "M0_Msun", "R0_au", "psi_DW", "e_rad", "alpha_SS"]
+# (Hof, 2026-10-27) optional per-disc star/grid columns. The flags are passed only if ALL five exist.
+# The 1 Msun CSV already records Mstar_Msun (= 1 for every disc) but none of the other four, so the
+# switch is "any of the other four present": then all five must be, otherwise it is an error.
+star_grid = ["Mstar_Msun", "Rstar_Rsun", "Teff_K", "rmin_au", "rmax_au"]
 with open(path, newline="") as f:
     rows = csv.DictReader(f)
     missing = [c for c in need if c not in rows.fieldnames]
     if missing:
         sys.exit(f"ERROR: {path} has no column(s) {missing}")
+    have = any(c in rows.fieldnames for c in star_grid[1:])
+    if have and not all(c in rows.fieldnames for c in star_grid):
+        sys.exit(f"ERROR: {path} has only some of the star/grid columns {star_grid}")
     for r in rows:
-        print(r["run_name"], r["M0_Msun"], r["R0_au"], r["psi_DW"], r["e_rad"], r["alpha_SS"])
+        extra = [r[c] for c in star_grid] if have else ["-"] * len(star_grid)
+        print(r["run_name"], r["M0_Msun"], r["R0_au"], r["psi_DW"], r["e_rad"], r["alpha_SS"], *extra)
 EOF
 NJOBS=$(wc -l < "$JOBLIST")
 NROWS=$(( $(wc -l < "$DRAWS_CSV") - 1 ))          # CSV rows minus the header
@@ -178,6 +207,7 @@ if [[ "$NJOBS" -ne "$NROWS" || "$NJOBS" -eq 0 ]]; then
     echo "ERROR: job list has $NJOBS lines but the population CSV has $NROWS discs" >&2; exit 1
 fi
 
+echo "Pop. type:  $POPULATION   (POPULATION=1msun | mstar)"
 echo "Config:     $CONFIG_FILE"
 echo "Population: $DRAWS_CSV"
 echo "Discs:      $NJOBS (ALL discs in the population), $NPROC at a time"
@@ -191,11 +221,17 @@ echo
 # ---------------------------------------------------------------------------
 # Arguments (order of the job-list columns):
 #   $1 run_name   $2 M0 [Msun]   $3 R0 [au]   $4 psi_DW [-]   $5 e_rad [-]   $6 alpha_SS [-]
+#   (Hof, 2026-10-27) $7 M* [Msun]   $8 R* [Rsun]   $9 Teff [K]   $10 r_min [au]   $11 r_max [au]
+#                     ("-" = not in the CSV -> star and grid come from the config)
 run_one() {
     local rn="$1" M="$2" Rd="$3" psi="$4" erad="$5" aSS="$6"
+    local Ms="${7:--}" Rs="${8:--}" Teff="${9:--}" rmin="${10:--}" rmax="${11:--}"
     local cmd=(python3 "$SCRIPT_DIR/run_model_Hof.py" --config "$CONFIG_FILE" --run_name "$rn"
                --M "$M" --Rd "$Rd" --psi_DW "$psi" --e_rad "$erad" --alpha_SS "$aSS"
                --output_dir "$OUTDIR")
+    if [[ "$Ms" != "-" ]]; then          # per-disc star and grid edges (all five, see the job list)
+        cmd+=(--Mstar "$Ms" --Rstar "$Rs" --Teff "$Teff" --rmin "$rmin" --rmax "$rmax")
+    fi
     if [[ "$DRY_RUN" == 1 ]]; then
         echo "${cmd[*]}"
         return 0
@@ -210,16 +246,17 @@ export -f run_one
 export SCRIPT_DIR CONFIG_FILE OUTDIR LOGDIR RUNLOGDIR DRY_RUN
 
 if command -v parallel >/dev/null 2>&1; then
-    # one disc per job-list line, columns -> {1}..{6}; starts the next disc as soon as a slot frees
+    # one disc per job-list line, columns -> {1}..{11} (2026-10-27: was {1}..{6}); starts the next
+    # disc as soon as a slot frees
     parallel -j "$NPROC" --colsep ' ' --joblog "$LOGDIR/joblog_full_${CSV_BASE%.csv}.tsv" \
-        run_one {1} {2} {3} {4} {5} {6} :::: "$JOBLIST" || true    # failures are summarised below
+        run_one {1} {2} {3} {4} {5} {6} {7} {8} {9} {10} {11} :::: "$JOBLIST" || true    # failures are summarised below
 else
     # Fallback without GNU parallel: background jobs, at most NPROC at once; `wait -n` (bash >= 4.3)
     # returns as soon as ANY job ends, so a new disc starts whenever a slot frees.
     echo "(GNU parallel not found -- using a bash job-control loop instead)"
     running=0
-    while read -r rn M Rd psi erad aSS; do
-        run_one "$rn" "$M" "$Rd" "$psi" "$erad" "$aSS" &
+    while read -r rn M Rd psi erad aSS Ms Rs Teff rmin rmax; do     # (2026-10-27) + 5 star/grid columns
+        run_one "$rn" "$M" "$Rd" "$psi" "$erad" "$aSS" "$Ms" "$Rs" "$Teff" "$rmin" "$rmax" &
         running=$((running + 1))
         if ((running >= NPROC)); then wait -n || true; running=$((running - 1)); fi
     done < "$JOBLIST"
