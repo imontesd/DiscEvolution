@@ -52,7 +52,7 @@
       3.0
     ],
     "eta_abort_hours": 24,
-    "output_dir": "/home/imontesd/output/DiscEvolution/popsynth/malanga"
+    "output_dir": "/scratch/imontesd/output/DiscEvolution/popsynth/malanga"
   },
   "disc": {
     "alpha": 0.0044,
