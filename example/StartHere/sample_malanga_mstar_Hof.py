@@ -59,9 +59,14 @@ The mapping, per disc i (decisions made with the user, 2026-10-26)
  5. R0 < 0.03 au (the floor): R0 is CLIPPED to 0.03 au and flagged (flag_R0_clipped), not redrawn;
     xi, Mdot0, r_min and r_max then follow the clipped R0. With the rule above r_min <= max(0.16 R0,
     0.03 au), so after this clip r_min <= R0 always (asserted).
- 6. psi_raw = alpha / alpha_SS - 1 (alpha_SS = 1e-4 fixed); negative for M* below ~0.15 Msun.
+ 6. psi_raw = alpha / alpha_SS - 1 (alpha_SS fixed for every disc; DEFAULT 1e-5 since 2026-10-28,
+    was 1e-4). psi_raw < 0 where the drawn alpha < alpha_SS: the MEDIAN alpha of Malanga Eq. 7,
+    log10 alpha = -3.4 + 2.0 log10(M*/0.3), equals alpha_SS at
+        M* = 0.3 x 10^((log10 alpha_SS + 3.4) / 2.0) = 0.15 Msun (alpha_SS = 1e-4), 0.048 Msun (1e-5).
     FLOOR: psi_DW = max(psi_raw, 0), so the TOTAL alpha used is alpha_SS (1 + psi_DW) =
     max(alpha, alpha_SS). Floored discs are purely viscous (no wind): e_rad = 1, lambda = inf.
+    Changing alpha_SS with the same seed keeps every disc's M*, M0, R0 and alpha (same random
+    numbers); only psi, the wind parameters (xi aside), Mdot0 of floored discs and r_min follow.
  7. psi_DW > 0, wind exactly as in sample_malanga_Hof.py:
         xi    = ln(1 + f_M) / ln(R0 / R_in),  f_M = 10^-0.6, R_in = 0.03 au   (Malanga Eq. 6)
         e_rad = 1 - xi (psi + 1 + 2 xi) / (psi + 3)                              (relation D)
@@ -368,7 +373,10 @@ if __name__ == "__main__":
                                              "per-disc M* (see module docstring).")
     ap.add_argument("--N", type=int, default=500, help="number of discs (default 500)")
     ap.add_argument("--seed", type=int, default=1, help="random seed (default 1)")
-    ap.add_argument("--alpha_SS", type=float, default=1e-4, help="fixed viscous alpha (dimensionless)")
+    # (Hof, 2026-10-28) default alpha_SS lowered from 1e-4 to 1e-5 at the user's request: fewer discs hit
+    # the psi floor (alpha < alpha_SS only for M* below ~0.05 Msun instead of ~0.15 Msun). The 22-disc Nibi
+    # pilot (job 25134509) was run with the OLD value 1e-4; its CSV copy in the pilot output folder keeps it.
+    ap.add_argument("--alpha_SS", type=float, default=1e-5, help="fixed viscous alpha (dimensionless; default 1e-5)")
     ap.add_argument("--out", type=str, default=None,
                     help="output CSV path (default config/malanga/malanga_mstar_draws_Hof_N<N>_seed<seed>.csv); "
                          "a .json with the same stem is written next to it")
