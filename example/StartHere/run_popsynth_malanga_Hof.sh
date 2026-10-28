@@ -50,7 +50,8 @@
 #                       truncation radius, r_max = min(400 R0, 1000 au)
 #                       config   config/popsynth/DiscConfig_Hof_malanga_mstar.json
 #                       CSV      config/malanga/malanga_mstar_draws_Hof_N500_seed1.csv
-#                       OUTDIR   $OUTPUT_ROOT/popsynth/malanga_mstar   LOGDIR  logs/malanga-comparison/mstar
+#                       OUTDIR   $OUTPUT_ROOT/popsynth/malanga_mstar_aSS1e-5   LOGDIR  logs/malanga-comparison/mstar_aSS1e-5
+#                       (2026-10-28: alpha_SS = 1e-5; the alpha_SS = 1e-4 pilot is in popsynth/malanga_mstar)
 #   The two populations reuse the same run names (hof_malanga_w0_<id>), so they MUST have separate
 #   OUTDIRs and LOGDIRs (the per-disc run_logs/<run_name>.out/.err would otherwise overwrite each
 #   other). Any of these defaults can still be overridden individually (CONFIG_FILE=..., etc.).
@@ -116,8 +117,11 @@ POPULATION="${POPULATION:-1msun}"
 case "$POPULATION" in
     1msun) DEF_CONFIG="DiscConfig_Hof_malanga.json";       DEF_CSV="malanga_draws_Hof_N500_seed1.csv"
            DEF_OUTSUB="malanga";                           DEF_LOGSUB="malanga-comparison" ;;
+    # (Hof, 2026-10-28) alpha_SS lowered to 1e-5 -> a DIFFERENT population (every psi changes), so it
+    # gets NEW folders; popsynth/malanga_mstar and logs/malanga-comparison/mstar keep the alpha_SS = 1e-4
+    # pilot (job 25134509). The population guard below would refuse to mix them anyway.
     mstar) DEF_CONFIG="DiscConfig_Hof_malanga_mstar.json"; DEF_CSV="malanga_mstar_draws_Hof_N500_seed1.csv"
-           DEF_OUTSUB="malanga_mstar";                     DEF_LOGSUB="malanga-comparison/mstar" ;;
+           DEF_OUTSUB="malanga_mstar_aSS1e-5";             DEF_LOGSUB="malanga-comparison/mstar_aSS1e-5" ;;
     *)     echo "ERROR: POPULATION must be 1msun or mstar, got '$POPULATION'" >&2; exit 1 ;;
 esac
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/config/popsynth/$DEF_CONFIG}"

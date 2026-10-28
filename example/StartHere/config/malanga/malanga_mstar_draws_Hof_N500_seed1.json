@@ -1,10 +1,10 @@
 {
-  "created": "2026-10-27T14:12:42",
+  "created": "2026-10-28T11:29:11",
   "script": "sample_malanga_mstar_Hof.py",
-  "git_commit": "48b103bf",
+  "git_commit": "d742a954",
   "N": 500,
   "seed": 1,
-  "alpha_SS": 0.0001,
+  "alpha_SS": 1e-05,
   "Mstar_source": "config/malanga/lupus_TableA1_Mstar_Hof.csv (Malanga et al. 2026 Table A.1, 65 measured M*, bootstrap, exact values)",
   "star_source": "config/malanga/BHAC15_iso_0.5Myr_Hof.csv (BHAC15, 0.5 Myr isochrone, linear interpolation in log-log)",
   "grid_rule": {
@@ -61,12 +61,12 @@
     "rmin": 4,
     "rmax": 4
   },
-  "n_psi_floored": 219,
+  "n_psi_floored": 28,
   "n_R0_clipped": 0,
-  "n_lambda_lt_1p5": 12,
+  "n_lambda_lt_1p5": 4,
   "n_offgrid_flagged": 1,
   "n_t_age_redrawn": 0,
-  "lambda_roundtrip_max_relerr": 3.842678772780772e-05,
-  "n_rmin_floor": 352,
-  "n_rmin_R0cap": 1
+  "lambda_roundtrip_max_relerr": 1.8765457271308073e-05,
+  "n_rmin_floor": 310,
+  "n_rmin_R0cap": 5
 }

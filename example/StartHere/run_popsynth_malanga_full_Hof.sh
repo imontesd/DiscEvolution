@@ -33,8 +33,8 @@
 #   --Rd <R0 [au]> --psi_DW <psi> --e_rad <e_rad> --alpha_SS <alpha_SS>, config DiscConfig_Hof_malanga.json.
 #
 # (Hof, 2026-10-27) POPULATION=1msun (default, exactly as before) or POPULATION=mstar (per-disc star:
-# sample_malanga_mstar_Hof.py, DiscConfig_Hof_malanga_mstar.json, OUTDIR popsynth/malanga_mstar, LOGDIR
-# logs/malanga-comparison/mstar), with the same defaults and the same optional per-disc
+# sample_malanga_mstar_Hof.py, DiscConfig_Hof_malanga_mstar.json, OUTDIR popsynth/malanga_mstar_aSS1e-5, LOGDIR
+# logs/malanga-comparison/mstar_aSS1e-5; alpha_SS = 1e-5 since 2026-10-28), with the same defaults and the same optional per-disc
 #     --Mstar <Msun> --Rstar <Rsun> --Teff <K> --rmin <au> --rmax <au>
 # as run_popsynth_malanga_Hof.sh (see its header). RUNTIME of the per-M* population is NOT yet known:
 # most of its discs have r_min = 0.03 au (vs 0.1 au for the 1 Msun runs), so smaller inner cells and
@@ -80,8 +80,9 @@ POPULATION="${POPULATION:-1msun}"
 case "$POPULATION" in
     1msun) DEF_CONFIG="DiscConfig_Hof_malanga.json";       DEF_CSV="malanga_draws_Hof_N500_seed1.csv"
            DEF_OUTSUB="malanga";                           DEF_LOGSUB="malanga-comparison" ;;
+    # (Hof, 2026-10-28) alpha_SS = 1e-5 population: NEW folders (see run_popsynth_malanga_Hof.sh)
     mstar) DEF_CONFIG="DiscConfig_Hof_malanga_mstar.json"; DEF_CSV="malanga_mstar_draws_Hof_N500_seed1.csv"
-           DEF_OUTSUB="malanga_mstar";                     DEF_LOGSUB="malanga-comparison/mstar" ;;
+           DEF_OUTSUB="malanga_mstar_aSS1e-5";             DEF_LOGSUB="malanga-comparison/mstar_aSS1e-5" ;;
     *)     echo "ERROR: POPULATION must be 1msun or mstar, got '$POPULATION'" >&2; exit 1 ;;
 esac
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/config/popsynth/$DEF_CONFIG}"
