@@ -235,8 +235,9 @@ with one further addition -- see that file's own docstring.)
  from each disc's R0: r_min = max(min(0.16 R0, 0.1 AU), 0.03 AU), r_max = min(400 R0, 1000 AU)).
  [(2026-10-27) the sampler's r_min rule is now max(min(R_T, 0.16 R0), 0.03 AU), with R_T the
  magnetospheric truncation radius of Konigl (1991) Eq. 1 (B* = 0.5 kG equatorial, beta = 0.5;
- stellar_props_Hof.truncation_radius_Konigl_Hof). Nothing changed in THIS file for that: r_min still
- arrives through --rmin.]
+ stellar_props_Hof.truncation_radius_Konigl_Hof). (2026-10-28) the 0.16 R0 cap is replaced by a fixed
+ 0.1 AU cap: r_min = max(min(R_T, 0.1 AU), 0.03 AU); and alpha_SS = 1e-5 for that population.
+ Nothing changed in THIS file for either: r_min and alpha_SS still arrive through --rmin / --alpha_SS.]
  In THIS file:
    * new CLI flags, routed through the same `overrides` dict as the other flags (so they are
      printed and recorded in the logged config):
