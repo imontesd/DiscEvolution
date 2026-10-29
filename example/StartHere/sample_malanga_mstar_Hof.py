@@ -18,6 +18,9 @@ Usage
 -----
     python sample_malanga_mstar_Hof.py                 # N = 500, seed = 1 -> config/malanga/
     python sample_malanga_mstar_Hof.py --N 10000 --out /tmp/test.csv     # large test sample
+    # (2026-10-29) companion population for ANALYSIS ONLY (the launchers use the default 1e-5 CSV):
+    # same seed -> same M*, M0, R0, alpha for every disc; only psi and what follows from it change
+    python sample_malanga_mstar_Hof.py --alpha_SS 1e-4 --out config/malanga/malanga_mstar_draws_Hof_N500_seed1_aSS1e-4.csv
 Writes <out>.csv and <out>.json (metadata: seed, N, sources, rules, counts, git commit, ...).
 
 Units
