@@ -1,6 +1,6 @@
 {
   "grid": {
-    "rmin": 0.03291,
+    "rmin": 0.05633,
     "rmax": 100.2,
     "nr": 500,
     "spacing": "natural",

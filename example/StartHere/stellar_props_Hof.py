@@ -25,6 +25,11 @@ again tied to the star, now through the PHYSICAL truncation of the disc by the s
 Konigl 1991, ApJ 370, L39, Sec. 2.1). The grid rule itself (floor / cap around R_T) lives in
 sample_malanga_mstar_Hof.rmin_from_RT, which is where B* and beta are chosen for the population.
 
+(2026-10-29) The sampler NO LONGER calls truncation_radius_Konigl_Hof(): at the user's request r_min
+now scales with R* only, r_min = 0.1 au (R*/R*(1 Msun))^(12/7) between the 0.03 au floor and 0.1 au
+cap (sample_malanga_mstar_Hof.rmin_from_Rstar). The 12/7 exponent is the R* dependence of Konigl
+Eq. 1 (mu = B* R*^3, r_in ~ mu^(4/7)). The function is KEPT here (unchanged) for reference/comparison.
+
 The R* and Teff returned here are what run_model_Hof.py passes on to
 DiscEvolution/star.py: SimpleStar(M=Mstar, R=Rstar, T_eff=Teff), with M in Msun,
 R in Rsun and T_eff in K (star.py StarBase.__init__).
