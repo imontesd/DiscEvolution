@@ -1,7 +1,7 @@
 {
-  "created": "2026-10-28T14:07:39",
+  "created": "2026-10-29T16:11:21",
   "script": "sample_malanga_mstar_Hof.py",
-  "git_commit": "64c138dc",
+  "git_commit": "3010ac24",
   "N": 500,
   "seed": 1,
   "alpha_SS": 1e-05,
@@ -12,9 +12,9 @@
     "rmin_beta": 0.5,
     "rmin_cap_au": 0.1,
     "rmin_floor_au": 0.03,
-    "rmax_frac_R0": 400.0,
+    "rmax_frac_R0": 20.0,
     "rmax_cap_au": 1000.0,
-    "formula": "r_min = max(min(R_T, 0.1 au), 0.03 au), R_T = Konigl (1991) Eq. 1 with B* (equatorial) and beta above, each disc's M*, R* and Mdot0_est (Tabone et al. 2022 Eq. 42); r_max = min(400 R0, 1000 au); nr from the config"
+    "formula": "r_min = max(min(R_T, 0.1 au), 0.03 au), R_T = Konigl (1991) Eq. 1 with B* (equatorial) and beta above, each disc's M*, R* and Mdot0_est (Tabone et al. 2022 Eq. 42); r_max = min(20 R0, 1000 au) (20 R0 since 2026-10-29, was 400 R0); nr from the config"
   },
   "psi_floor": "psi_DW = max(alpha_DW / alpha_SS - 1, 0); floored discs: e_rad = 1, lambda = inf (no wind)",
   "R0_rule": "R0 < 0.03 au (the r_min floor) is clipped to 0.03 au (flag_R0_clipped); then r_min <= R0",

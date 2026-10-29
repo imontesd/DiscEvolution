@@ -1,7 +1,7 @@
 {
   "grid": {
     "rmin": 0.03291,
-    "rmax": 1000,
+    "rmax": 100.2,
     "nr": 500,
     "spacing": "natural",
     "smart_binning": false,
