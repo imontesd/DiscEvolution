@@ -237,7 +237,9 @@ with one further addition -- see that file's own docstring.)
  magnetospheric truncation radius of Konigl (1991) Eq. 1 (B* = 0.5 kG equatorial, beta = 0.5;
  stellar_props_Hof.truncation_radius_Konigl_Hof). (2026-10-28) the 0.16 R0 cap is replaced by a fixed
  0.1 AU cap: r_min = max(min(R_T, 0.1 AU), 0.03 AU); and alpha_SS = 1e-5 for that population.
- Nothing changed in THIS file for either: r_min and alpha_SS still arrive through --rmin / --alpha_SS.]
+ Nothing changed in THIS file for either: r_min and alpha_SS still arrive through --rmin / --alpha_SS.
+ (2026-10-29) the sampler's r_max rule is now min(20 R0, 1000 AU) (was 400 R0); nothing changed in
+ THIS file: r_max still arrives through --rmax.]
  In THIS file:
    * new CLI flags, routed through the same `overrides` dict as the other flags (so they are
      printed and recorded in the logged config):

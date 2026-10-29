@@ -34,12 +34,18 @@ The mapping, per disc i (decisions made with the user, 2026-10-26)
  3. Malanga Eq. 7 with shift_i = log10(M*_i / 0.3 Msun):
         log10 X_i = log10 Xbar(0.3 Msun) + lambda_X shift_i + sigma_X z_i,  X = M0, R0, alpha_DW
     (Malanga Table 2 MHD column; Malanga's alpha_DW is our TOTAL alpha -- "direct" mapping).
- 4. Grid edges (r_min REVISED 2026-10-27 and 2026-10-28; r_max unchanged from 2026-10-26), nr = 500:
+ 4. Grid edges (r_min REVISED 2026-10-27 and 2026-10-28; r_max REVISED 2026-10-29), nr = 500:
         R_T   = Konigl (1991) Eq. 1 magnetospheric truncation radius (stellar_props_Hof.
                 truncation_radius_Konigl_Hof) with B* = 0.5 kG (equatorial, SAME for every star) and
                 beta = 0.5, from the disc's own M*, R* and analytic initial Mdot0 (Tabone Eq. 42, below)
         r_min = max(min(R_T, 0.1 au), 0.03 au)                          (rmin_from_RT)
-        r_max = min(400 R0, 1000 au)                                    (rmax_from_R0)
+        r_max = min(20 R0, 1000 au)                                     (rmax_from_R0)
+    (2026-10-29, user's choice) r_max lowered from 400 R0 to 20 R0 (the 1000 au cap is kept; it now
+    binds only for R0 > 50 au). With nr = 500 fixed, the cells are spread over a ~20x smaller
+    log-range, so the disc itself is better resolved. Initial mass beyond r_max: exp(-20) ~ 2e-9 of M0
+    (offgrid_mass_fraction), i.e. negligible unless the 1000 au cap binds. Caveat: the disc spreads
+    during the run (r_c grows with time; Tabone et al. 2022 self-similar solutions), so discs that
+    spread by more than a few x R0 by 3 Myr will push gas onto the outer boundary.
     (2026-10-28, user's choice) the cap on R_T is now a FIXED 0.1 au (the old fixed grid.rmin) instead
     of 0.16 R0. For the N500 seed1 population (alpha_SS = 1e-5) this changes r_min for 2 discs only
     (ids 68 and 125, R_T = 0.164 and 0.112 au -> 0.1 au), whose disc then starts inside R_T. The cap
@@ -59,7 +65,8 @@ The mapping, per disc i (decisions made with the user, 2026-10-26)
     the timestep) bounded. The floor and the cap cannot both act (0.03 au < 0.1 au).
     Why r_max: on a fixed 250 au grid the initial Sigma ~ exp(-R/R0) underflows to exactly 0
     beyond ~745 R0 and the IrradiatedEOS temperature solve fails (all discs with R0 < 0.336 au
-    crashed at set-up in a test, 2026-10-26); exp(-400) ~ 1e-174 is still representable.
+    crashed at set-up in a test, 2026-10-26); exp(-400) ~ 1e-174 is still representable, and
+    exp(-20) ~ 2e-9 (the 2026-10-29 r_max = 20 R0) is far from underflow.
     Caveats: Mdot0 is the ANALYTIC (Malanga-equivalent) value; the code's initial Mdot is ~2.2x higher
     (inner disc at T_max), which would give R_T ~ 0.80x smaller (2.2^(-2/7)). The grid edge is fixed
     for the whole run, while the real R_T grows as Mdot falls (R_T ~ Mdot^(-2/7)).
@@ -125,7 +132,9 @@ GRID_RULE = {
     "rmin_beta": 0.5,         # dimensionless Konigl/Ghosh & Lamb geometry factor (Konigl 1991, p. L40)
     "rmin_cap_au": 0.10,      # au; r_min = R_T, but at most 0.1 au (the old fixed grid.rmin) ...
     "rmin_floor_au": 0.03,    # ... and at least 0.03 au (Malanga's R_in, Eq. 6)
-    "rmax_frac_R0": 400.0,    # r_max = 400 R0 (Sigma ~ exp(-R/R0) stays > 0 up to ~745 R0) ...
+    # (2026-10-29, user's choice) was 400.0. r_max = 20 R0: exp(-20) ~ 2e-9 of M0 starts beyond r_max,
+    # and the 500 cells cover a narrower range (finer resolution inside the disc).
+    "rmax_frac_R0": 20.0,     # r_max = 20 R0 (dimensionless multiple of R0 [au]) ...
     "rmax_cap_au": 1000.0,    # ... but at most 1000 au
 }
 OFFGRID_FLAG = 0.05         # flag discs whose initial profile has > 5 % of its mass beyond r_max
@@ -159,7 +168,8 @@ def rmin_from_RT(R_T):
 
 
 def rmax_from_R0(R0):
-    """Grid outer edge [au]: r_max = min(400 R0, 1000 au), rounded to 4 sf. R0 in au."""
+    """Grid outer edge [au]: r_max = min(20 R0, 1000 au), rounded to 4 sf. R0 in au.
+    (2026-10-29: factor 20 from GRID_RULE["rmax_frac_R0"]; was 400.)"""
     g = GRID_RULE
     return round_sig(np.minimum(g["rmax_frac_R0"] * np.asarray(R0, dtype=float), g["rmax_cap_au"]),
                      SIG_FIGS_STAR["rmax"])
@@ -412,7 +422,8 @@ if __name__ == "__main__":
         "grid_rule": {**GRID_RULE, "formula": "r_min = max(min(R_T, 0.1 au), 0.03 au), R_T = Konigl (1991) Eq. 1 "
                                               "with B* (equatorial) and beta above, each disc's M*, R* and "
                                               "Mdot0_est (Tabone et al. 2022 Eq. 42); "
-                                              "r_max = min(400 R0, 1000 au); nr from the config"},
+                                              "r_max = min(20 R0, 1000 au) (20 R0 since 2026-10-29, "
+                                              "was 400 R0); nr from the config"},
         "psi_floor": "psi_DW = max(alpha_DW / alpha_SS - 1, 0); floored discs: e_rad = 1, lambda = inf (no wind)",
         "R0_rule": "R0 < 0.03 au (the r_min floor) is clipped to 0.03 au (flag_R0_clipped); then r_min <= R0",
         "lambda_rule": "Balogh et al. (2026) Eq. 16 with e_rad from relation D (xi from Malanga Eq. 6)",
