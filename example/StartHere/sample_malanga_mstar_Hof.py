@@ -46,12 +46,21 @@ The mapping, per disc i (decisions made with the user, 2026-10-26)
  3. Malanga Eq. 7 with shift_i = log10(M*_i / 0.3 Msun):
         log10 X_i = log10 Xbar(0.3 Msun) + lambda_X shift_i + sigma_X z_i,  X = M0, R0, alpha_DW
     (Malanga Table 2 MHD column; Malanga's alpha_DW is our TOTAL alpha -- "direct" mapping).
- 4. Grid edges (r_min REVISED 2026-10-27 and 2026-10-28; r_max REVISED 2026-10-29), nr = 500:
-        R_T   = Konigl (1991) Eq. 1 magnetospheric truncation radius (stellar_props_Hof.
-                truncation_radius_Konigl_Hof) with B* = 0.5 kG (equatorial, SAME for every star) and
-                beta = 0.5, from the disc's own M*, R* and analytic initial Mdot0 (Tabone Eq. 42, below)
-        r_min = max(min(R_T, 0.1 au), 0.03 au)                          (rmin_from_RT)
+ 4. Grid edges (r_min REVISED 2026-10-27, 2026-10-28 and 2026-10-29; r_max REVISED 2026-10-29), nr = 500:
+        r_R*  = 0.1 au x (R* / R*(1 Msun))^(12/7),  R*(1 Msun) = 3.079 Rsun (BHAC15 0.5 Myr)
+        r_min = max(min(r_R*, 0.1 au), 0.03 au)                         (rmin_from_Rstar)
         r_max = min(20 R0, 1000 au)                                     (rmax_from_R0)
+    (2026-10-29, user's choice) r_min now depends on the stellar RADIUS ONLY. The exponent 12/7 is the
+    R* dependence of the Konigl (1991) Eq. 1 truncation radius (p. L39): r_in = beta mu^(4/7)
+    (2GM*)^(-1/7) Mdot^(-2/7) with mu = B* R*^3, so r_in ~ (R*^3)^(4/7) = R*^(12/7) at fixed B*, M* and
+    Mdot. The M*^(-1/7) and Mdot^(-2/7) factors (and B*, beta) are DROPPED; the normalisation is fixed
+    instead by anchoring r_min = 0.1 au (the old fixed grid.rmin) at the 1 Msun star of the isochrone.
+    With the 0.1 au cap and 0.03 au floor kept (user's choice): the cap binds for R* > 3.079 Rsun, i.e.
+    M* > 1 Msun; the floor binds for R* < 3.079 x 0.3^(7/12) = 1.53 Rsun, i.e. M* < ~0.165 Msun.
+    Example: M* = 0.3 Msun (R* = 2.203 Rsun) -> r_min = 0.056 au.
+    [Superseded rule, 2026-10-27/28, for the record: r_min = max(min(R_T, 0.1 au), 0.03 au) with R_T
+    the FULL Konigl Eq. 1 (stellar_props_Hof.truncation_radius_Konigl_Hof; B* = 0.5 kG equatorial,
+    beta = 0.5, each disc's M*, R* and analytic Mdot0). The notes below about R_T / B* refer to it.]
     (2026-10-29, user's choice) r_max lowered from 400 R0 to 20 R0 (the 1000 au cap is kept; it now
     binds only for R0 > 50 au). With nr = 500 fixed, the cells are spread over a ~20x smaller
     log-range, so the disc itself is better resolved. Initial mass beyond r_max: exp(-20) ~ 2e-9 of M0
@@ -79,14 +88,15 @@ The mapping, per disc i (decisions made with the user, 2026-10-26)
     beyond ~745 R0 and the IrradiatedEOS temperature solve fails (all discs with R0 < 0.336 au
     crashed at set-up in a test, 2026-10-26); exp(-400) ~ 1e-174 is still representable, and
     exp(-20) ~ 2e-9 (the 2026-10-29 r_max = 20 R0) is far from underflow.
-    Caveats: Mdot0 is the ANALYTIC (Malanga-equivalent) value; the code's initial Mdot is ~2.2x higher
-    (inner disc at T_max), which would give R_T ~ 0.80x smaller (2.2^(-2/7)). The grid edge is fixed
-    for the whole run, while the real R_T grows as Mdot falls (R_T ~ Mdot^(-2/7)).
+    Caveats (superseded R_T rule): Mdot0 is the ANALYTIC (Malanga-equivalent) value; the code's initial
+    Mdot is ~2.2x higher (inner disc at T_max), which would give R_T ~ 0.80x smaller (2.2^(-2/7)). The
+    grid edge is fixed for the whole run, while the real R_T grows as Mdot falls (R_T ~ Mdot^(-2/7)).
+    (2026-10-29) With the R*-only rule, r_min no longer depends on Mdot0, nor on psi or alpha_SS.
  5. R0 < 0.03 au (the floor): R0 is CLIPPED to 0.03 au and flagged (flag_R0_clipped), not redrawn;
     xi, Mdot0, r_min and r_max then follow the clipped R0. (2026-10-28) With the fixed 0.1 au cap,
     r_min <= R0 is no longer guaranteed for 0.03 au < R0 < 0.1 au; it is CHECKED, and the sampler
     raises an error if any disc has r_min > R0 (none for N500 seed1). Handling such a disc (clip R0 up
-    to r_min, or redraw) would need a decision: r_min depends on Mdot0, which depends on R0.
+    to r_min, or redraw) would need a decision.
  6. psi_raw = alpha / alpha_SS - 1 (alpha_SS fixed for every disc; DEFAULT 1e-5 since 2026-10-28,
     was 1e-4). psi_raw < 0 where the drawn alpha < alpha_SS: the MEDIAN alpha of Malanga Eq. 7,
     log10 alpha = -3.4 + 2.0 log10(M*/0.3), equals alpha_SS at
@@ -115,7 +125,7 @@ from datetime import datetime
 
 import numpy as np
 
-from DiscEvolution.constants import AU, Rsun   # cm; only to print R_T in stellar radii (2026-10-27)
+from DiscEvolution.constants import AU, Rsun   # cm; only to print r_min in stellar radii (2026-10-27; r_min since 2026-10-29)
 
 # Helpers and Malanga Table 2 values are shared with the 1 Msun sampler (single source of truth).
 from sample_malanga_Hof import (
@@ -125,7 +135,8 @@ from sample_malanga_Hof import (
 )
 from stellar_props_Hof import (
     load_lupus_Mstar_Hof, star_R_Teff_Hof, Lstar_from_R_Teff_Hof,
-    truncation_radius_Konigl_Hof,                       # (2026-10-27) Konigl 1991 Eq. 1, for r_min
+    # (2026-10-29) truncation_radius_Konigl_Hof (full Konigl Eq. 1) is no longer imported: r_min now
+    # scales with R* only (rmin_from_Rstar); the function stays in stellar_props_Hof.py for reference.
     BHAC15_FILE, LUPUS_MSTAR_FILE, BHAC15_AGE_MYR,
 )
 
@@ -139,11 +150,15 @@ from stellar_props_Hof import (
 # truncation radius R_T (Konigl 1991, Eq. 1), kept between the 0.03 au floor and a 0.16 R0 cap.
 # (2026-10-28, user's choice) the 0.16 R0 cap ("rmin_frac_R0") is REPLACED by a fixed 0.1 au cap:
 #     r_min = max(min(R_T, 0.1 au), 0.03 au)
+# (2026-10-29, user's choice) R_T (and its B* = 500 G, beta = 0.5 entries) REPLACED by a pure R* scaling
+# with the R*^(12/7) exponent of Konigl (1991) Eq. 1, anchored at r_min = 0.1 au for M* = 1 Msun:
+#     r_min = max(min(0.1 au (R*/R*(1 Msun))^(12/7), 0.1 au), 0.03 au)
 GRID_RULE = {
-    "rmin_B_star_G": 500.0,   # G, stellar dipole field at the EQUATOR (Konigl's B* = mu/R*^3), same for all stars
-    "rmin_beta": 0.5,         # dimensionless Konigl/Ghosh & Lamb geometry factor (Konigl 1991, p. L40)
-    "rmin_cap_au": 0.10,      # au; r_min = R_T, but at most 0.1 au (the old fixed grid.rmin) ...
-    "rmin_floor_au": 0.03,    # ... and at least 0.03 au (Malanga's R_in, Eq. 6)
+    "rmin_anchor_au": 0.10,          # au; r_min of the anchor star (= the old fixed grid.rmin) ...
+    "rmin_anchor_Mstar_Msun": 1.0,   # Msun; ... the anchor star (its R* comes from the BHAC15 isochrone)
+    "rmin_Rstar_exponent": 12 / 7,   # dimensionless; r_in ~ mu^(4/7) ~ (R*^3)^(4/7) (Konigl 1991 Eq. 1)
+    "rmin_cap_au": 0.10,      # au; r_min at most 0.1 au (binds for M* > 1 Msun) ...
+    "rmin_floor_au": 0.03,    # ... and at least 0.03 au (Malanga's R_in, Eq. 6; binds for M* < ~0.165 Msun)
     # (2026-10-29, user's choice) was 400.0. r_max = 20 R0: exp(-20) ~ 2e-9 of M0 starts beyond r_max,
     # and the 500 cells cover a narrower range (finer resolution inside the disc).
     "rmax_frac_R0": 20.0,     # r_max = 20 R0 (dimensionless multiple of R0 [au]) ...
@@ -166,21 +181,29 @@ _FORMATS_MSTAR = {**_FORMATS, "Mstar_Msun": "{:.6g}", "Rstar_Rsun": "{:.6g}", "T
 MSTAR_BINS = [0.0, 0.1, 0.15, 0.3, 0.5, np.inf]
 
 
-def rmin_from_RT(R_T):
+# (2026-10-29) R* of the anchor star [Rsun], from the same BHAC15 0.5 Myr isochrone and interpolation
+# as every disc's star (a table node: 1.0 Msun -> 3.079 Rsun), so the anchor disc gets exactly 0.1 au
+RSTAR_ANCHOR_RSUN = float(star_R_Teff_Hof(GRID_RULE["rmin_anchor_Mstar_Msun"])[0])
+
+
+def rmin_from_Rstar(Rstar):
     """
-    (2026-10-28) Grid inner edge [au]: r_min = max(min(R_T, 0.1 au), 0.03 au), rounded to 4 sf.
-    R_T: magnetospheric truncation radius [au] (Konigl 1991 Eq. 1).
-    (2026-10-27 version: max(min(R_T, 0.16 R0), 0.03 au), with R0 as a second argument.)
-    Also returns two int flags, which cannot both be 1 (0.03 au < 0.1 au):
-        flag_floor = 1 where R_T < 0.03 au, so the floor set r_min;
-        flag_cap   = 1 where R_T > 0.1 au, so the cap set r_min (the disc then starts INSIDE R_T).
+    (2026-10-29) Grid inner edge [au] from the stellar radius ONLY, rounded to 4 sf:
+        r_R* = 0.1 au x (R* / 3.079 Rsun)^(12/7)        (R*^(12/7): Konigl 1991 Eq. 1 at fixed B*, M*, Mdot)
+        r_min = max(min(r_R*, 0.1 au), 0.03 au)
+    Rstar in Rsun. Returns (r_min [au], r_R* [au, before floor/cap], flag_floor, flag_cap); the int
+    flags cannot both be 1 (0.03 au < 0.1 au):
+        flag_floor = 1 where r_R* < 0.03 au (M* below ~0.165 Msun), so the floor set r_min;
+        flag_cap   = 1 where r_R* > 0.1 au (M* above 1 Msun), so the cap set r_min.
+    (Replaces rmin_from_RT(R_T) = max(min(R_T, 0.1 au), 0.03 au) of 2026-10-28.)
     """
     g = GRID_RULE
-    R_T = np.asarray(R_T, dtype=float)                                     # au
-    rmin = np.maximum(np.minimum(R_T, g["rmin_cap_au"]), g["rmin_floor_au"])   # au
-    flag_floor = (R_T < g["rmin_floor_au"]).astype(int)                    # 0.03 au floor applied
-    flag_cap = (R_T > g["rmin_cap_au"]).astype(int)                        # 0.1 au cap applied
-    return round_sig(rmin, SIG_FIGS_STAR["rmin"]), flag_floor, flag_cap
+    Rstar = np.asarray(Rstar, dtype=float)                                                  # Rsun
+    r_Rstar = g["rmin_anchor_au"] * (Rstar / RSTAR_ANCHOR_RSUN) ** g["rmin_Rstar_exponent"]  # au
+    rmin = np.maximum(np.minimum(r_Rstar, g["rmin_cap_au"]), g["rmin_floor_au"])            # au
+    flag_floor = (r_Rstar < g["rmin_floor_au"]).astype(int)               # 0.03 au floor applied
+    flag_cap = (r_Rstar > g["rmin_cap_au"]).astype(int)                   # 0.1 au cap applied
+    return round_sig(rmin, SIG_FIGS_STAR["rmin"]), r_Rstar, flag_floor, flag_cap
 
 
 def rmax_from_R0(R0):
@@ -314,12 +337,9 @@ def draw_population(N, seed, alpha_SS):
     fM_eff = np.where(wind, f_M, 0.0)
     Mdot0 = (psi + 1 + 2 * xi_eff) / (psi + 1) * M0 / (2 * t_acc * 1e6 * (1 + fM_eff))   # Msun / yr
 
-    # ---- 4: grid edges (2026-10-27: r_min from the magnetospheric truncation radius) ----
-    # R_T from Konigl (1991) Eq. 1 with each disc's own M* [Msun], R* [Rsun] and analytic Mdot0
-    # [Msun/yr], and B* [G, equatorial] and beta the SAME for every disc (GRID_RULE)
-    R_T = truncation_radius_Konigl_Hof(Mstar, Rstar, Mdot0,
-                                       GRID_RULE["rmin_B_star_G"], GRID_RULE["rmin_beta"])   # au
-    rmin, flag_rmin_floor, flag_rmin_cap = rmin_from_RT(R_T)     # au, 4 sf (same rounding as R0)
+    # ---- 4: grid edges (2026-10-29: r_min from the stellar radius ONLY, R*^(12/7) anchored at 1 Msun;
+    # was the full Konigl R_T with M*, R*, Mdot0, B*, beta) ----
+    rmin, r_Rstar, flag_rmin_floor, flag_rmin_cap = rmin_from_Rstar(Rstar)   # au (rmin 4 sf, same as R0)
     # (2026-10-28) NOT guaranteed any more with the fixed 0.1 au cap (see module docstring, points 4-5):
     # stop rather than run a disc whose grid starts outside its own characteristic radius
     if np.any(bad_edge := rmin > R0):
@@ -341,7 +361,9 @@ def draw_population(N, seed, alpha_SS):
         "rmin_au": rmin, "rmax_au": rmax,
         # (2026-10-27) Konigl truncation radius [au] before the floor/cap, and which limit set r_min
         # (2026-10-28) flag_rmin_cap = the fixed 0.1 au cap set r_min (column was flag_rmin_R0cap, 0.16 R0 cap)
-        "R_T_au": R_T, "flag_rmin_floor": flag_rmin_floor, "flag_rmin_cap": flag_rmin_cap,
+        # (2026-10-29) column R_T_au (full Konigl R_T) REPLACED by rmin_Rstar_au = 0.1 au (R*/3.079 Rsun)^(12/7)
+        # [au], the R*-only value before the floor / cap
+        "rmin_Rstar_au": r_Rstar, "flag_rmin_floor": flag_rmin_floor, "flag_rmin_cap": flag_rmin_cap,
         "M0_Msun": M0, "R0_au": R0, "R0_drawn_au": R0_drawn,
         "alpha_DW_Malanga": alpha_DW, "alpha_tot": alpha_tot, "alpha_SS": np.full(N, alpha_SS),
         "psi_raw": psi_raw, "psi_DW": psi, "psi_floored": floored.astype(int),
@@ -414,7 +436,7 @@ def print_summary(cols, info):
               f"{cols['flag_R0_clipped'][m].sum():11d}")
     print("\nDerived parameters [min / median / max]:")
     for key in ["psi_DW", "xi", "e_rad", "t_acc0_Myr", "Mdot0_est_Msun_yr", "f_M_grid_expected",
-                "R_T_au", "rmin_au", "rmax_au"]:
+                "rmin_Rstar_au", "rmin_au", "rmax_au"]:                  # (2026-10-29) was R_T_au
         v = cols[key]
         print(f"  {key:18s} {v.min():.4g} / {np.median(v):.4g} / {v.max():.4g}")
     lw = cols["lambda_DW"][np.isfinite(cols["lambda_DW"])]
@@ -422,11 +444,13 @@ def print_summary(cols, info):
     print(f"\nFlags: psi floored {info['n_psi_floored']}, R0 clipped {info['n_R0_clipped']}, "
           f"lambda < 1.5 {info['n_lambda_lt_1p5']}, > {OFFGRID_FLAG:.0%} mass beyond r_max "
           f"{info['n_offgrid_flagged']}, ages redrawn {info['n_t_age_redrawn']}")
-    # (2026-10-27) which limit set r_min, and R_T in stellar radii (Konigl: "a few stellar radii")
-    RT_Rstar = cols["R_T_au"] * AU / (cols["Rstar_Rsun"] * Rsun)          # dimensionless (au, Rsun -> cm)
-    print(f"r_min: = R_T for {cols['id'].size - info['n_rmin_floor'] - info['n_rmin_cap']} discs, "
+    # (2026-10-27) which limit set r_min, and the inner edge in stellar radii (Konigl: "a few stellar radii")
+    # (2026-10-29) for the R*-only rule; r_min / R* uses the FINAL r_min (after floor / cap)
+    rmin_Rstar = cols["rmin_au"] * AU / (cols["Rstar_Rsun"] * Rsun)       # dimensionless (au, Rsun -> cm)
+    print(f"r_min: = 0.1 au (R*/{RSTAR_ANCHOR_RSUN:.4g} Rsun)^(12/7) for "
+          f"{cols['id'].size - info['n_rmin_floor'] - info['n_rmin_cap']} discs, "
           f"0.03 au floor {info['n_rmin_floor']}, 0.1 au cap {info['n_rmin_cap']}; "
-          f"R_T / R* p5/p50/p95 = {np.percentile(RT_Rstar, [5, 50, 95]).round(2)}")
+          f"r_min / R* p5/p50/p95 = {np.percentile(rmin_Rstar, [5, 50, 95]).round(2)}")
     print(f"lambda round-trip max relative error: {info['lambda_roundtrip_max_relerr']:.2e}")
 
 
@@ -462,9 +486,10 @@ if __name__ == "__main__":
                             "until inside; discs whose first draw is inside keep it (flag_Mstar_redrawn = 0)",
         "star_source": os.path.relpath(BHAC15_FILE, here) + f" (BHAC15, {BHAC15_AGE_MYR} Myr isochrone, "
                        "linear interpolation in log-log)",
-        "grid_rule": {**GRID_RULE, "formula": "r_min = max(min(R_T, 0.1 au), 0.03 au), R_T = Konigl (1991) Eq. 1 "
-                                              "with B* (equatorial) and beta above, each disc's M*, R* and "
-                                              "Mdot0_est (Tabone et al. 2022 Eq. 42); "
+        # (2026-10-29) r_min from R* only (was the full Konigl R_T with M*, R*, Mdot0, B*, beta)
+        "grid_rule": {**GRID_RULE, "rmin_anchor_Rstar_Rsun": RSTAR_ANCHOR_RSUN,
+                      "formula": "r_min = max(min(0.1 au (R*/R*(1 Msun))^(12/7), 0.1 au), 0.03 au), "
+                                 "exponent 12/7 = R* dependence of Konigl (1991) Eq. 1 (mu = B* R*^3); "
                                               "r_max = min(20 R0, 1000 au) (20 R0 since 2026-10-29, "
                                               "was 400 R0); nr from the config"},
         "psi_floor": "psi_DW = max(alpha_DW / alpha_SS - 1, 0); floored discs: e_rad = 1, lambda = inf (no wind)",

@@ -1,7 +1,7 @@
 {
-  "created": "2026-10-29T16:20:33",
+  "created": "2026-10-29T17:13:07",
   "script": "sample_malanga_mstar_Hof.py",
-  "git_commit": "fe6938be",
+  "git_commit": "b5c4bc86",
   "N": 500,
   "seed": 1,
   "alpha_SS": 1e-05,
@@ -13,13 +13,15 @@
   "Mstar_range_rule": "M* outside Mstar_range_Msun is redrawn from Table A.1 (own random stream, disc order) until inside; discs whose first draw is inside keep it (flag_Mstar_redrawn = 0)",
   "star_source": "config/malanga/BHAC15_iso_0.5Myr_Hof.csv (BHAC15, 0.5 Myr isochrone, linear interpolation in log-log)",
   "grid_rule": {
-    "rmin_B_star_G": 500.0,
-    "rmin_beta": 0.5,
+    "rmin_anchor_au": 0.1,
+    "rmin_anchor_Mstar_Msun": 1.0,
+    "rmin_Rstar_exponent": 1.7142857142857142,
     "rmin_cap_au": 0.1,
     "rmin_floor_au": 0.03,
     "rmax_frac_R0": 20.0,
     "rmax_cap_au": 1000.0,
-    "formula": "r_min = max(min(R_T, 0.1 au), 0.03 au), R_T = Konigl (1991) Eq. 1 with B* (equatorial) and beta above, each disc's M*, R* and Mdot0_est (Tabone et al. 2022 Eq. 42); r_max = min(20 R0, 1000 au) (20 R0 since 2026-10-29, was 400 R0); nr from the config"
+    "rmin_anchor_Rstar_Rsun": 3.079,
+    "formula": "r_min = max(min(0.1 au (R*/R*(1 Msun))^(12/7), 0.1 au), 0.03 au), exponent 12/7 = R* dependence of Konigl (1991) Eq. 1 (mu = B* R*^3); r_max = min(20 R0, 1000 au) (20 R0 since 2026-10-29, was 400 R0); nr from the config"
   },
   "psi_floor": "psi_DW = max(alpha_DW / alpha_SS - 1, 0); floored discs: e_rad = 1, lambda = inf (no wind)",
   "R0_rule": "R0 < 0.03 au (the r_min floor) is clipped to 0.03 au (flag_R0_clipped); then r_min <= R0",
@@ -72,8 +74,8 @@
   "n_offgrid_flagged": 1,
   "n_t_age_redrawn": 0,
   "lambda_roundtrip_max_relerr": 1.8650137392883792e-05,
-  "n_rmin_floor": 293,
-  "n_rmin_cap": 2,
+  "n_rmin_floor": 166,
+  "n_rmin_cap": 25,
   "n_Mstar_redrawn": 132,
   "n_Mstar_redraws": 168
 }

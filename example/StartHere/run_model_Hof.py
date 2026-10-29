@@ -241,7 +241,10 @@ with one further addition -- see that file's own docstring.)
  (2026-10-29) the sampler's r_max rule is now min(20 R0, 1000 AU) (was 400 R0); nothing changed in
  THIS file: r_max still arrives through --rmax.
  (2026-10-29) the sampler restricts M* to 0.1-1.5 Msun (draws outside are redrawn from Table A.1);
- nothing changed in THIS file: M* still arrives through --Mstar.]
+ nothing changed in THIS file: M* still arrives through --Mstar.
+ (2026-10-29) the sampler's r_min rule is now R*-only: r_min = max(min(0.1 AU (R*/3.079 Rsun)^(12/7),
+ 0.1 AU), 0.03 AU) (12/7 = R* exponent of Konigl 1991 Eq. 1, anchored at 0.1 AU for M* = 1 Msun);
+ nothing changed in THIS file: r_min still arrives through --rmin.]
  In THIS file:
    * new CLI flags, routed through the same `overrides` dict as the other flags (so they are
      printed and recorded in the logged config):
