@@ -239,7 +239,9 @@ with one further addition -- see that file's own docstring.)
  0.1 AU cap: r_min = max(min(R_T, 0.1 AU), 0.03 AU); and alpha_SS = 1e-5 for that population.
  Nothing changed in THIS file for either: r_min and alpha_SS still arrive through --rmin / --alpha_SS.
  (2026-10-29) the sampler's r_max rule is now min(20 R0, 1000 AU) (was 400 R0); nothing changed in
- THIS file: r_max still arrives through --rmax.]
+ THIS file: r_max still arrives through --rmax.
+ (2026-10-29) the sampler restricts M* to 0.1-1.5 Msun (draws outside are redrawn from Table A.1);
+ nothing changed in THIS file: M* still arrives through --Mstar.]
  In THIS file:
    * new CLI flags, routed through the same `overrides` dict as the other flags (so they are
      printed and recorded in the logged config):

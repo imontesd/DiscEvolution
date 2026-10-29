@@ -29,6 +29,15 @@ The mapping, per disc i (decisions made with the user, 2026-10-26)
 ------------------------------------------------------------------
  1. M*_i: bootstrap of the 65 MEASURED stellar masses of Malanga Table A.1 (exact values, no
     jitter; stellar_props_Hof.load_lupus_Mstar_Hof). Survivor-biased: disc-bearing stars only.
+    (2026-10-29, user's choice) M* is RESTRICTED to MSTAR_RANGE = [0.1, 1.5] Msun: a draw outside
+    it is REDRAWN (from Table A.1 again) until it falls inside. Table A.1 has 17 of its 65 masses
+    below 0.1 Msun (0.023-0.095 Msun) and none above 1.5 Msun (max 1.259), so in practice the
+    population is a bootstrap of the 48 masses in [0.1, 1.259] Msun (median 0.288 Msun, was
+    0.186 Msun for all 65); the 1.5 Msun upper limit is only a safety net. NOTE: the BHAC15 table
+    used for R* and Teff stops at 1.4 Msun, so star_R_Teff_Hof would raise for 1.4 < M* <= 1.5.
+    The redraws use their OWN random stream, consumed in disc order (see draw_population), so
+    discs whose first M* was already in range keep it, i.e. they are the same discs as in the
+    2026-10-28 population; only the redrawn discs (flag_Mstar_redrawn = 1) change.
  2. R*_i, Teff_i: BHAC15 0.5 Myr isochrone (Baraffe et al. 2015), linear in log-log
     (stellar_props_Hof.star_R_Teff_Hof). These go to SimpleStar(M=, R=, T_eff=) in the code.
  3. Malanga Eq. 7 with shift_i = log10(M*_i / 0.3 Msun):
@@ -137,6 +146,10 @@ GRID_RULE = {
     "rmax_frac_R0": 20.0,     # r_max = 20 R0 (dimensionless multiple of R0 [au]) ...
     "rmax_cap_au": 1000.0,    # ... but at most 1000 au
 }
+# (2026-10-29, user's choice) allowed stellar-mass range [Msun], inclusive at both ends. Table A.1
+# draws outside it are redrawn (see draw_population, step 1). 0.1 Msun removes the 17 Table A.1
+# masses below 0.1 Msun; 1.5 Msun is a safety net (Table A.1 max is 1.259 Msun).
+MSTAR_RANGE = (0.1, 1.5)    # Msun
 OFFGRID_FLAG = 0.05         # flag discs whose initial profile has > 5 % of its mass beyond r_max
 LAMBDA_MIN_WIND = 1.5       # accretion-powered MHD wind needs lambda > 3/2 (Tabone et al. 2022, Sec. 2.3)
 
@@ -195,15 +208,32 @@ def draw_population(N, seed, alpha_SS):
         so disc i differs from its 1 Msun twin only through M* (and the floor / clip / grid).
       * M* index: from an independent child generator (SeedSequence(seed).spawn), so drawing M*
         does not shift the z rows.
-    Both streams are filled element by element, so disc i is identical for ANY N (increasing N
-    only appends discs). The only redraw left is for ages outside (0, T_FINAL_MYR] (> 4.7 sigma).
+      * (2026-10-29) M* redraws (first draw outside MSTAR_RANGE): from a SECOND child generator,
+        consumed disc by disc in id order, so the first-draw stream above is untouched.
+    All streams are filled element by element, so disc i is identical for ANY N (increasing N
+    only appends discs). Other redraws: ages outside (0, T_FINAL_MYR] (> 4.7 sigma).
     """
     rng = np.random.default_rng(seed)
-    rng_Mstar = np.random.default_rng(np.random.SeedSequence(seed).spawn(1)[0])
+    # spawn(2)[0] is the same child as the old spawn(1)[0] (same spawn key), so first draws are unchanged
+    rng_Mstar, rng_Mstar_redraw = (np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(2))
 
     # ---- 1-2: stellar mass, radius, Teff and luminosity ----
     lupus_M = load_lupus_Mstar_Hof()                                    # Msun, 65 values
     k = rng_Mstar.integers(0, lupus_M.size, size=N)                     # bootstrap index into Table A.1
+
+    # (2026-10-29) restrict M* to MSTAR_RANGE [Msun]: redraw (from Table A.1 again) until inside
+    M_lo, M_hi = MSTAR_RANGE                                            # Msun
+    in_range = lambda m: (m >= M_lo) & (m <= M_hi)                      # m in Msun
+    if not np.any(in_range(lupus_M)):                                   # guard against an endless loop
+        raise ValueError(f"no Table A.1 mass inside MSTAR_RANGE = {MSTAR_RANGE} Msun")
+    Mstar_first = lupus_M[k].copy()                                     # Msun, first draw (diagnostic column)
+    redrawn = ~in_range(Mstar_first)                                    # discs that needed >= 1 redraw
+    n_Mstar_redraws = 0                                                 # total number of extra draws
+    for i in np.flatnonzero(redrawn):                                   # disc id order -> prefix-stable in N
+        while not in_range(lupus_M[k[i]]):
+            k[i] = rng_Mstar_redraw.integers(0, lupus_M.size)
+            n_Mstar_redraws += 1
+
     Mstar = round_sig(lupus_M[k], SIG_FIGS_STAR["Mstar"])               # Msun
     Rstar, Teff = star_R_Teff_Hof(Mstar)                                # Rsun, K
     Rstar = round_sig(Rstar, SIG_FIGS_STAR["Rstar"])
@@ -301,7 +331,9 @@ def draw_population(N, seed, alpha_SS):
     cols = {
         "id": np.arange(N),
         "run_name": np.array([f"hof_malanga_w0_{i:04d}" for i in range(N)]),   # "w0" = winds, omega = 0
-        "lupus_index_A1": k,                                # 0-based row of lupus_TableA1_Mstar_Hof.csv
+        "lupus_index_A1": k,                                # 0-based row of lupus_TableA1_Mstar_Hof.csv (final draw)
+        # (2026-10-29) first M* drawn [Msun] and whether it was outside MSTAR_RANGE (then redrawn)
+        "Mstar_first_draw_Msun": Mstar_first, "flag_Mstar_redrawn": redrawn.astype(int),
         "Mstar_Msun": Mstar, "Rstar_Rsun": Rstar, "Teff_K": Teff, "Lstar_Lsun": Lstar,
         "rmin_au": rmin, "rmax_au": rmax,
         # (2026-10-27) Konigl truncation radius [au] before the floor/cap, and which limit set r_min
@@ -321,6 +353,8 @@ def draw_population(N, seed, alpha_SS):
         "n_lambda_lt_1p5": int(flag_lam.sum()), "n_offgrid_flagged": int((f_offgrid > OFFGRID_FLAG).sum()),
         "n_t_age_redrawn": n_t_redrawn, "lambda_roundtrip_max_relerr": lam_relerr_max,
         "n_rmin_floor": int(flag_rmin_floor.sum()), "n_rmin_cap": int(flag_rmin_cap.sum()),   # (2026-10-27; 0.1 au cap since 2026-10-28)
+        # (2026-10-29) M* range restriction: discs redrawn, and total extra draws needed
+        "n_Mstar_redrawn": int(redrawn.sum()), "n_Mstar_redraws": n_Mstar_redraws,
     }
     return cols, info
 
@@ -352,7 +386,9 @@ def print_summary(cols, info):
     """Eq. 7 check at each disc's own M*, psi per M* bin, and flag counts."""
     shift = np.log10(cols["Mstar_Msun"] / M_NORM)
     print(f"\nStellar masses: N = {cols['Mstar_Msun'].size}, median {np.median(cols['Mstar_Msun']):.3f} Msun, "
-          f"range {cols['Mstar_Msun'].min():.3f}-{cols['Mstar_Msun'].max():.3f} Msun")
+          f"range {cols['Mstar_Msun'].min():.3f}-{cols['Mstar_Msun'].max():.3f} Msun; "
+          f"{info['n_Mstar_redrawn']} discs redrawn into MSTAR_RANGE = {MSTAR_RANGE} Msun "
+          f"({info['n_Mstar_redraws']} extra draws)")       # (2026-10-29)
     print("Eq. 7 residuals, log10(X) - [median + lambda log10(M*/0.3)]  (target: mean 0, std sigma):")
     for name, col in [("M0", "M0_Msun"), ("R0", "R0_drawn_au"), ("alpha_DW", "alpha_DW_Malanga")]:
         p = TABLE2[name]
@@ -417,6 +453,10 @@ if __name__ == "__main__":
         "N": args.N, "seed": args.seed, "alpha_SS": args.alpha_SS,
         "Mstar_source": os.path.relpath(LUPUS_MSTAR_FILE, here) + " (Malanga et al. 2026 Table A.1, 65 measured M*, "
                         "bootstrap, exact values)",
+        # (2026-10-29) M* restricted to this range [Msun]; draws outside it are redrawn
+        "Mstar_range_Msun": list(MSTAR_RANGE),
+        "Mstar_range_rule": "M* outside Mstar_range_Msun is redrawn from Table A.1 (own random stream, disc order) "
+                            "until inside; discs whose first draw is inside keep it (flag_Mstar_redrawn = 0)",
         "star_source": os.path.relpath(BHAC15_FILE, here) + f" (BHAC15, {BHAC15_AGE_MYR} Myr isochrone, "
                        "linear interpolation in log-log)",
         "grid_rule": {**GRID_RULE, "formula": "r_min = max(min(R_T, 0.1 au), 0.03 au), R_T = Konigl (1991) Eq. 1 "
