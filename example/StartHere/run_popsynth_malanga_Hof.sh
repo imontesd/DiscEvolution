@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --account=def-mbalogh
-#SBATCH --time=0-08:00:00            # whole population (all waves); see "Runtime" below
-#SBATCH --cpus-per-task=192          # must equal NPROC below, and fit on ONE node
-#SBATCH --mem-per-cpu=3800M          # 3.8 GB per CPU -> 192 x 3.8 GB = 730 GB <= 748 GB (one node)
+#SBATCH --time=1-00:00:00            # whole population (all waves); see "Runtime" below
+#SBATCH --cpus-per-task=23          # must equal NPROC below, and fit on ONE node
+#SBATCH --mem-per-cpu=500M          # 0.5 GB per CPU -> 23 x 0.5 GB = 11.5 GB <= 748 GB (one node)
 #SBATCH --job-name=hof_malanga
 #SBATCH --output=/scratch/imontesd/output/DiscEvolution/logs/malanga-comparison/%x_%j.out   # this script's own echo output (folder must exist BEFORE sbatch)
 #SBATCH --mail-user=imontesdeocahof@gmail.com
@@ -135,7 +135,7 @@ DRAWS_CSV="${DRAWS_CSV:-$SCRIPT_DIR/config/malanga/$DEF_CSV}"   # from sample_ma
 OUTDIR="${OUTDIR:-$OUTPUT_ROOT/popsynth/$DEF_OUTSUB}"           # .h5 files + config_log/ + population copy
 LOGDIR="${LOGDIR:-$LOGS_ROOT/$DEF_LOGSUB}"   # this sweep's folder: Slurm output, job list, joblog
 RUNLOGDIR="$LOGDIR/run_logs"     # (Hof, 2026-10-19) per-disc .out/.err logs, one pair per disc
-NPROC="${NPROC:-192}"            # runs at once; keep equal to --cpus-per-task above
+NPROC="${NPROC:-23}"            # runs at once; keep equal to --cpus-per-task above
 FIRST_ID="${FIRST_ID:-}"         # first disc id to run (inclusive); empty = from the start of the CSV
 LAST_ID="${LAST_ID:-}"           # last disc id to run (inclusive); empty = to the end of the CSV
 IDS="${IDS:-}"                   # (Hof, 2026-10-19) explicit disc ids, space- or comma-separated; empty = use FIRST_ID..LAST_ID
