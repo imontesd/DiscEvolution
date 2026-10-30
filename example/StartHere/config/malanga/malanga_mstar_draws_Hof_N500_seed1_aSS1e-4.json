@@ -1,7 +1,7 @@
 {
-  "created": "2026-10-30T16:23:12",
+  "created": "2026-10-30T16:34:51",
   "script": "sample_malanga_mstar_Hof.py",
-  "git_commit": "0683df5a",
+  "git_commit": "ea3d4e45",
   "N": 500,
   "seed": 1,
   "alpha_SS": 0.0001,
@@ -26,6 +26,8 @@
   },
   "psi_floor": "psi_DW = max(alpha_DW / alpha_SS - 1, 0); floored discs: e_rad = 1, lambda = inf (no wind)",
   "R0_rule": "R0 < 0.03 au (the r_min floor) is clipped to 0.03 au (flag_R0_clipped); then r_min <= R0",
+  "R0_rmin_min": 5.0,
+  "R0_rmin_rule": "a draw with R0 / r_min below R0_rmin_min is discarded; the disc gets a new star (table entry, scatter, range test) and a new z_R0 until it passes (flag_R0_rmin_redrawn); z_M0, z_alpha, t_age are kept, M0 and alpha follow Eq. 7 at the new M*",
   "lambda_rule": "Balogh et al. (2026) Eq. 16 with e_rad from relation D (xi from Malanga Eq. 6)",
   "TABLE2": {
     "M0": {
@@ -69,14 +71,16 @@
     "rmin": 4,
     "rmax": 4
   },
-  "n_psi_floored": 129,
+  "n_psi_floored": 126,
   "n_R0_clipped": 0,
-  "n_lambda_lt_1p5": 13,
+  "n_lambda_lt_1p5": 12,
   "n_offgrid_flagged": 1,
   "n_t_age_redrawn": 0,
   "lambda_roundtrip_max_relerr": 3.457373984949719e-05,
-  "n_rmin_floor": 154,
+  "n_rmin_floor": 151,
   "n_rmin_cap": 13,
   "n_Mstar_redrawn": 144,
-  "n_Mstar_redraws": 195
+  "n_Mstar_redraws": 195,
+  "n_R0_rmin_redrawn": 8,
+  "n_R0_rmin_discarded": 8
 }
