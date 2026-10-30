@@ -244,7 +244,10 @@ with one further addition -- see that file's own docstring.)
  nothing changed in THIS file: M* still arrives through --Mstar.
  (2026-10-29) the sampler's r_min rule is now R*-only: r_min = max(min(0.1 AU (R*/3.079 Rsun)^(12/7),
  0.1 AU), 0.03 AU) (12/7 = R* exponent of Konigl 1991 Eq. 1, anchored at 0.1 AU for M* = 1 Msun);
- nothing changed in THIS file: r_min still arrives through --rmin.]
+ nothing changed in THIS file: r_min still arrives through --rmin.
+ (2026-10-30) the sampler adds a 0.1 dex Gaussian scatter to log10 M* of each Table A.1 draw (Malanga
+ et al. 2026, Sec. 2.4, p. 3) and restricts M* to 0.1-1.4 Msun (was 1.5, the BHAC15 table stops at 1.4);
+ nothing changed in THIS file: M* still arrives through --Mstar.]
  In THIS file:
    * new CLI flags, routed through the same `overrides` dict as the other flags (so they are
      printed and recorded in the logged config):

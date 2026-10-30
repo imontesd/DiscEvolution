@@ -21,6 +21,7 @@ Usage
     # (2026-10-29) companion population for ANALYSIS ONLY (the launchers use the default 1e-5 CSV):
     # same seed -> same M*, M0, R0, alpha for every disc; only psi and what follows from it change
     python sample_malanga_mstar_Hof.py --alpha_SS 1e-4 --out config/malanga/malanga_mstar_draws_Hof_N500_seed1_aSS1e-4.csv
+    # (2026-10-30) --Mstar_scatter_dex 0 turns the M* scatter off (exact Table A.1 values, population v3)
 Writes <out>.csv and <out>.json (metadata: seed, N, sources, rules, counts, git commit, ...).
 
 Units
@@ -41,6 +42,22 @@ The mapping, per disc i (decisions made with the user, 2026-10-26)
     The redraws use their OWN random stream, consumed in disc order (see draw_population), so
     discs whose first M* was already in range keep it, i.e. they are the same discs as in the
     2026-10-28 population; only the redrawn discs (flag_Mstar_redrawn = 1) change.
+    (2026-10-30, user's choice; REPLACES "exact values, no jitter") a Gaussian SCATTER of 0.1 dex is
+    added to each mass drawn from the table, to make a better comparison with Malanga et al. (2026):
+        log10 M*_i = log10 M*_table,k + 0.1 z_i,   z_i ~ N(0, 1)            (M* in Msun)
+    0.1 dex is Malanga's adopted uncertainty on log10 M* (Sec. 2.4, p. 3). The scatter is drawn BEFORE
+    the range test: a scattered mass outside MSTAR_RANGE is redrawn (new table entry AND new z). So
+    table masses just below 0.1 Msun can now enter the population, and the masses near 0.1 Msun are
+    partly pushed out and redrawn; flag_Mstar_redrawn and Mstar_first_draw_Msun now refer to the
+    SCATTERED first draw. Every disc's M* changes (and so does everything that follows from it, points
+    2-7), but each disc keeps its z row (point 3). Mstar_table_Msun records the table value used.
+    The upper limit of MSTAR_RANGE is lowered from 1.5 to 1.4 Msun, because the scatter can now reach
+    masses the BHAC15 table does not cover (see the NOTE above). --Mstar_scatter_dex 0 gives exact
+    table values again; with it the population v3 values are reproduced exactly (Table A.1 max is
+    1.259 Msun, so the lower upper limit changes nothing there).
+    Caveat: Malanga add their scatter to the SYNTHETIC OBSERVABLES when comparing with the data
+    (pp. 6 and 10), for M0, Mdot and R90 as well, while here it changes the M* that sets the disc's
+    initial conditions (Eq. 7).
  2. R*_i, Teff_i: BHAC15 0.5 Myr isochrone (Baraffe et al. 2015), linear in log-log
     (stellar_props_Hof.star_R_Teff_Hof). These go to SimpleStar(M=, R=, T_eff=) in the code.
  3. Malanga Eq. 7 with shift_i = log10(M*_i / 0.3 Msun):
@@ -167,7 +184,12 @@ GRID_RULE = {
 # (2026-10-29, user's choice) allowed stellar-mass range [Msun], inclusive at both ends. Table A.1
 # draws outside it are redrawn (see draw_population, step 1). 0.1 Msun removes the 17 Table A.1
 # masses below 0.1 Msun; 1.5 Msun is a safety net (Table A.1 max is 1.259 Msun).
-MSTAR_RANGE = (0.1, 1.5)    # Msun
+# (2026-10-30) upper limit lowered from 1.5 to 1.4 Msun: with the scatter below, M* can exceed the Table
+# A.1 maximum, and the BHAC15 table used for R*, Teff stops at 1.4 Msun (star_R_Teff_Hof raises above it).
+MSTAR_RANGE = (0.1, 1.4)    # Msun
+# (2026-10-30, user's choice) Gaussian scatter added to log10 M* of each Table A.1 draw [dex]; the value is
+# Malanga et al. (2026) Sec. 2.4 (p. 3), their adopted uncertainty on log10 M*. 0 = exact table values.
+MSTAR_SCATTER_DEX = 0.1
 OFFGRID_FLAG = 0.05         # flag discs whose initial profile has > 5 % of its mass beyond r_max
 LAMBDA_MIN_WIND = 1.5       # accretion-powered MHD wind needs lambda > 3/2 (Tabone et al. 2022, Sec. 2.3)
 
@@ -224,7 +246,7 @@ def offgrid_mass_fraction(R0, rmax):
     return np.exp(-rmax / np.asarray(R0, dtype=float))
 
 
-def draw_population(N, seed, alpha_SS):
+def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX):
     """
     Draw N discs with per-disc M*. Returns (dict of columns, info dict).
 
@@ -236,31 +258,41 @@ def draw_population(N, seed, alpha_SS):
         does not shift the z rows.
       * (2026-10-29) M* redraws (first draw outside MSTAR_RANGE): from a SECOND child generator,
         consumed disc by disc in id order, so the first-draw stream above is untouched.
+      * (2026-10-30) M* scatter of the first draw: one standard normal per disc from a THIRD child
+        generator. M* scatter of each redraw: from a FOURTH child, consumed in the same disc order as
+        the second, so the sequence of redraw INDICES is the same as without scatter.
     All streams are filled element by element, so disc i is identical for ANY N (increasing N
     only appends discs). Other redraws: ages outside (0, T_FINAL_MYR] (> 4.7 sigma).
     """
     rng = np.random.default_rng(seed)
-    # spawn(2)[0] is the same child as the old spawn(1)[0] (same spawn key), so first draws are unchanged
-    rng_Mstar, rng_Mstar_redraw = (np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(2))
+    # spawn(n)[j] is the same child for any n > j (same spawn key), so the first two streams are unchanged
+    # (2026-10-30: third and fourth children added for the M* scatter of first draws and of redraws)
+    rng_Mstar, rng_Mstar_redraw, rng_Mstar_scatter, rng_Mstar_redraw_scatter = (
+        np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(4))
 
     # ---- 1-2: stellar mass, radius, Teff and luminosity ----
     lupus_M = load_lupus_Mstar_Hof()                                    # Msun, 65 values
     k = rng_Mstar.integers(0, lupus_M.size, size=N)                     # bootstrap index into Table A.1
+    # (2026-10-30) M* = table value x 10^(sigma z) [Msun], sigma = Mstar_scatter_dex (Malanga Sec. 2.4, p. 3)
+    z_Mstar = rng_Mstar_scatter.standard_normal(N)                      # dimensionless, one per disc
+    Mstar_drawn = lupus_M[k] * 10 ** (Mstar_scatter_dex * z_Mstar)      # Msun, table value + scatter
 
     # (2026-10-29) restrict M* to MSTAR_RANGE [Msun]: redraw (from Table A.1 again) until inside
+    # (2026-10-30) the test is on the SCATTERED mass; a redraw takes a new table entry AND a new scatter
     M_lo, M_hi = MSTAR_RANGE                                            # Msun
     in_range = lambda m: (m >= M_lo) & (m <= M_hi)                      # m in Msun
     if not np.any(in_range(lupus_M)):                                   # guard against an endless loop
         raise ValueError(f"no Table A.1 mass inside MSTAR_RANGE = {MSTAR_RANGE} Msun")
-    Mstar_first = lupus_M[k].copy()                                     # Msun, first draw (diagnostic column)
+    Mstar_first = Mstar_drawn.copy()                                    # Msun, first draw (diagnostic column)
     redrawn = ~in_range(Mstar_first)                                    # discs that needed >= 1 redraw
     n_Mstar_redraws = 0                                                 # total number of extra draws
     for i in np.flatnonzero(redrawn):                                   # disc id order -> prefix-stable in N
-        while not in_range(lupus_M[k[i]]):
+        while not in_range(Mstar_drawn[i]):
             k[i] = rng_Mstar_redraw.integers(0, lupus_M.size)
+            Mstar_drawn[i] = lupus_M[k[i]] * 10 ** (Mstar_scatter_dex * rng_Mstar_redraw_scatter.standard_normal())   # Msun
             n_Mstar_redraws += 1
 
-    Mstar = round_sig(lupus_M[k], SIG_FIGS_STAR["Mstar"])               # Msun
+    Mstar = round_sig(Mstar_drawn, SIG_FIGS_STAR["Mstar"])              # Msun
     Rstar, Teff = star_R_Teff_Hof(Mstar)                                # Rsun, K
     Rstar = round_sig(Rstar, SIG_FIGS_STAR["Rstar"])
     Teff = round_sig(Teff, SIG_FIGS_STAR["Teff"])
@@ -356,7 +388,10 @@ def draw_population(N, seed, alpha_SS):
         "run_name": np.array([f"hof_malanga_w0_{i:04d}" for i in range(N)]),   # "w0" = winds, omega = 0
         "lupus_index_A1": k,                                # 0-based row of lupus_TableA1_Mstar_Hof.csv (final draw)
         # (2026-10-29) first M* drawn [Msun] and whether it was outside MSTAR_RANGE (then redrawn)
+        # (2026-10-30) first draw now INCLUDES the scatter; Mstar_table_Msun = Table A.1 value of the final
+        # draw BEFORE the scatter [Msun], so log10(Mstar_Msun / Mstar_table_Msun) is the scatter applied [dex]
         "Mstar_first_draw_Msun": Mstar_first, "flag_Mstar_redrawn": redrawn.astype(int),
+        "Mstar_table_Msun": lupus_M[k],
         "Mstar_Msun": Mstar, "Rstar_Rsun": Rstar, "Teff_K": Teff, "Lstar_Lsun": Lstar,
         "rmin_au": rmin, "rmax_au": rmax,
         # (2026-10-27) Konigl truncation radius [au] before the floor/cap, and which limit set r_min
@@ -414,6 +449,10 @@ def print_summary(cols, info):
           f"range {cols['Mstar_Msun'].min():.3f}-{cols['Mstar_Msun'].max():.3f} Msun; "
           f"{info['n_Mstar_redrawn']} discs redrawn into MSTAR_RANGE = {MSTAR_RANGE} Msun "
           f"({info['n_Mstar_redraws']} extra draws)")       # (2026-10-29)
+    # (2026-10-30) scatter actually applied, after the range test (target std: Mstar_scatter_dex, slightly
+    # reduced by the redraws at the range edges)
+    dlogM = np.log10(cols["Mstar_Msun"] / cols["Mstar_table_Msun"])     # dex
+    print(f"M* scatter applied: mean {dlogM.mean():+.3f}  std {dlogM.std():.3f} dex")
     print("Eq. 7 residuals, log10(X) - [median + lambda log10(M*/0.3)]  (target: mean 0, std sigma):")
     for name, col in [("M0", "M0_Msun"), ("R0", "R0_drawn_au"), ("alpha_DW", "alpha_DW_Malanga")]:
         p = TABLE2[name]
@@ -464,6 +503,9 @@ if __name__ == "__main__":
     # the psi floor (alpha < alpha_SS only for M* below ~0.05 Msun instead of ~0.15 Msun). The 22-disc Nibi
     # pilot (job 25134509) was run with the OLD value 1e-4; its CSV copy in the pilot output folder keeps it.
     ap.add_argument("--alpha_SS", type=float, default=1e-5, help="fixed viscous alpha (dimensionless; default 1e-5)")
+    # (Hof, 2026-10-30) Malanga et al. (2026) Sec. 2.4, p. 3; 0 = exact Table A.1 values (population v3)
+    ap.add_argument("--Mstar_scatter_dex", type=float, default=MSTAR_SCATTER_DEX,
+                    help=f"Gaussian scatter added to log10 M* of each Table A.1 draw [dex; default {MSTAR_SCATTER_DEX}]")
     ap.add_argument("--out", type=str, default=None,
                     help="output CSV path (default config/malanga/malanga_mstar_draws_Hof_N<N>_seed<seed>.csv); "
                          "a .json with the same stem is written next to it")
@@ -471,7 +513,7 @@ if __name__ == "__main__":
 
     out = args.out or os.path.join(here, "config", "malanga",
                                    f"malanga_mstar_draws_Hof_N{args.N}_seed{args.seed}.csv")
-    cols, info = draw_population(args.N, args.seed, args.alpha_SS)
+    cols, info = draw_population(args.N, args.seed, args.alpha_SS, args.Mstar_scatter_dex)
     write_csv_mstar(out, cols)
 
     meta = {
@@ -479,11 +521,14 @@ if __name__ == "__main__":
         "script": os.path.basename(__file__), "git_commit": git_commit(),
         "N": args.N, "seed": args.seed, "alpha_SS": args.alpha_SS,
         "Mstar_source": os.path.relpath(LUPUS_MSTAR_FILE, here) + " (Malanga et al. 2026 Table A.1, 65 measured M*, "
-                        "bootstrap, exact values)",
+                        "bootstrap, plus the scatter below)",
+        # (2026-10-30) Gaussian scatter on log10 M* [dex] (Malanga et al. 2026, Sec. 2.4, p. 3)
+        "Mstar_scatter_dex": args.Mstar_scatter_dex,
         # (2026-10-29) M* restricted to this range [Msun]; draws outside it are redrawn
         "Mstar_range_Msun": list(MSTAR_RANGE),
-        "Mstar_range_rule": "M* outside Mstar_range_Msun is redrawn from Table A.1 (own random stream, disc order) "
-                            "until inside; discs whose first draw is inside keep it (flag_Mstar_redrawn = 0)",
+        "Mstar_range_rule": "M* (after the scatter) outside Mstar_range_Msun is redrawn from Table A.1, with a new "
+                            "scatter (own random stream, disc order) until inside; discs whose first draw is "
+                            "inside keep it (flag_Mstar_redrawn = 0)",
         "star_source": os.path.relpath(BHAC15_FILE, here) + f" (BHAC15, {BHAC15_AGE_MYR} Myr isochrone, "
                        "linear interpolation in log-log)",
         # (2026-10-29) r_min from R* only (was the full Konigl R_T with M*, R*, Mdot0, B*, beta)
