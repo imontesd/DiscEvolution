@@ -33,13 +33,17 @@
 #   --Rd <R0 [au]> --psi_DW <psi> --e_rad <e_rad> --alpha_SS <alpha_SS>, config DiscConfig_Hof_malanga.json.
 #
 # (Hof, 2026-10-27) POPULATION=1msun (default, exactly as before) or POPULATION=mstar (per-disc star:
-# sample_malanga_mstar_Hof.py, DiscConfig_Hof_malanga_mstar.json, OUTDIR popsynth/malanga_mstar_aSS1e-5_v3, LOGDIR
-# logs/malanga-comparison/mstar_aSS1e-5_v3; alpha_SS = 1e-5 since 2026-10-28; "_v3" since 2026-10-29 = population
-# version 3: M* in 0.1-1.5 Msun, r_max = 20 R0, r_min ~ R*^(12/7)), with the same defaults and the same optional per-disc
+# sample_malanga_mstar_Hof.py, DiscConfig_Hof_malanga_mstar.json, OUTDIR popsynth/malanga_mstar_aSS1e-5_v4, LOGDIR
+# logs/malanga-comparison/mstar_aSS1e-5_v4; alpha_SS = 1e-5 since 2026-10-28; "_v3" since 2026-10-29 = population
+# version 3: M* in 0.1-1.5 Msun, r_max = 20 R0, r_min ~ R*^(12/7); "_v4" since 2026-10-30 = population version 4:
+# 0.1 dex M* scatter, M* in 0.1-1.4 Msun, R0 / r_min >= 5), with the same defaults and the same optional per-disc
 #     --Mstar <Msun> --Rstar <Rsun> --Teff <K> --rmin <au> --rmax <au>
 # as run_popsynth_malanga_Hof.sh (see its header). RUNTIME of the per-M* population is NOT yet known:
 # most of its discs have r_min = 0.03 au (vs 0.1 au for the 1 Msun runs), so smaller inner cells and
 # shorter timesteps. Size --time below from the per-M* pilot before submitting it.
+# (Hof, 2026-10-30) For the full per-M* run, submit run_popsynth_malanga_mstar_full_Hof.sh instead: it has
+# the Slurm request sized from pilot 3 (the #SBATCH lines of THIS file are the 1 Msun ones), sets
+# POPULATION=mstar, checks the CSV, and then calls this script.
 #
 # Output layout (scratch; same as the project output folder):
 #     /scratch/imontesd/output/DiscEvolution/
@@ -83,8 +87,9 @@ case "$POPULATION" in
            DEF_OUTSUB="malanga";                           DEF_LOGSUB="malanga-comparison" ;;
     # (Hof, 2026-10-28) alpha_SS = 1e-5 population: NEW folders (see run_popsynth_malanga_Hof.sh)
     # (Hof, 2026-10-29) population version 3 -> NEW folders "_v3" (see run_popsynth_malanga_Hof.sh)
+    # (Hof, 2026-10-30) population version 4 -> NEW folders "_v4" (see run_popsynth_malanga_Hof.sh)
     mstar) DEF_CONFIG="DiscConfig_Hof_malanga_mstar.json"; DEF_CSV="malanga_mstar_draws_Hof_N500_seed1.csv"
-           DEF_OUTSUB="malanga_mstar_aSS1e-5_v3";          DEF_LOGSUB="malanga-comparison/mstar_aSS1e-5_v3" ;;
+           DEF_OUTSUB="malanga_mstar_aSS1e-5_v4";          DEF_LOGSUB="malanga-comparison/mstar_aSS1e-5_v4" ;;
     *)     echo "ERROR: POPULATION must be 1msun or mstar, got '$POPULATION'" >&2; exit 1 ;;
 esac
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/config/popsynth/$DEF_CONFIG}"
