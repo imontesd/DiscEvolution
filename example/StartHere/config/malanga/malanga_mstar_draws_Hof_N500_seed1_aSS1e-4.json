@@ -1,16 +1,17 @@
 {
-  "created": "2026-10-29T17:13:07",
+  "created": "2026-10-30T16:23:12",
   "script": "sample_malanga_mstar_Hof.py",
-  "git_commit": "b5c4bc86",
+  "git_commit": "0683df5a",
   "N": 500,
   "seed": 1,
   "alpha_SS": 0.0001,
-  "Mstar_source": "config/malanga/lupus_TableA1_Mstar_Hof.csv (Malanga et al. 2026 Table A.1, 65 measured M*, bootstrap, exact values)",
+  "Mstar_source": "config/malanga/lupus_TableA1_Mstar_Hof.csv (Malanga et al. 2026 Table A.1, 65 measured M*, bootstrap, plus the scatter below)",
+  "Mstar_scatter_dex": 0.1,
   "Mstar_range_Msun": [
     0.1,
-    1.5
+    1.4
   ],
-  "Mstar_range_rule": "M* outside Mstar_range_Msun is redrawn from Table A.1 (own random stream, disc order) until inside; discs whose first draw is inside keep it (flag_Mstar_redrawn = 0)",
+  "Mstar_range_rule": "M* (after the scatter) outside Mstar_range_Msun is redrawn from Table A.1, with a new scatter (own random stream, disc order) until inside; discs whose first draw is inside keep it (flag_Mstar_redrawn = 0)",
   "star_source": "config/malanga/BHAC15_iso_0.5Myr_Hof.csv (BHAC15, 0.5 Myr isochrone, linear interpolation in log-log)",
   "grid_rule": {
     "rmin_anchor_au": 0.1,
@@ -68,14 +69,14 @@
     "rmin": 4,
     "rmax": 4
   },
-  "n_psi_floored": 122,
+  "n_psi_floored": 129,
   "n_R0_clipped": 0,
-  "n_lambda_lt_1p5": 16,
+  "n_lambda_lt_1p5": 13,
   "n_offgrid_flagged": 1,
   "n_t_age_redrawn": 0,
-  "lambda_roundtrip_max_relerr": 3.842678772780772e-05,
-  "n_rmin_floor": 166,
-  "n_rmin_cap": 25,
-  "n_Mstar_redrawn": 132,
-  "n_Mstar_redraws": 168
+  "lambda_roundtrip_max_relerr": 3.457373984949719e-05,
+  "n_rmin_floor": 154,
+  "n_rmin_cap": 13,
+  "n_Mstar_redrawn": 144,
+  "n_Mstar_redraws": 195
 }
