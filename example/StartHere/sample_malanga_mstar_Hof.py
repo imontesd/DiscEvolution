@@ -21,7 +21,8 @@ Usage
     # (2026-10-29) companion population for ANALYSIS ONLY (the launchers use the default 1e-5 CSV):
     # same seed -> same M*, M0, R0, alpha for every disc; only psi and what follows from it change
     python sample_malanga_mstar_Hof.py --alpha_SS 1e-4 --out config/malanga/malanga_mstar_draws_Hof_N500_seed1_aSS1e-4.csv
-    # (2026-10-30) --Mstar_scatter_dex 0 turns the M* scatter off (exact Table A.1 values, population v3)
+    # (2026-10-30) --Mstar_scatter_dex 0 turns the M* scatter off (exact Table A.1 values) and
+    # --R0_rmin_min 0 turns the R0 / r_min restriction off; with both, population v3 is reproduced
 Writes <out>.csv and <out>.json (metadata: seed, N, sources, rules, counts, git commit, ...).
 
 Units
@@ -114,6 +115,18 @@ The mapping, per disc i (decisions made with the user, 2026-10-26)
     r_min <= R0 is no longer guaranteed for 0.03 au < R0 < 0.1 au; it is CHECKED, and the sampler
     raises an error if any disc has r_min > R0 (none for N500 seed1). Handling such a disc (clip R0 up
     to r_min, or redraw) would need a decision.
+    (2026-10-30, user's choice) RESTRICTION R0 / r_min >= 5 (R0_RMIN_MIN, both in au): a draw with a
+    smaller ratio is DISCARDED and the disc starts again with a completely new star (new Table A.1
+    entry, new 0.1 dex scatter, same MSTAR_RANGE test, hence new R*, Teff, r_min) and a new R0 (new
+    z_R0), repeated until the ratio passes. The test uses the rounded values passed to the code, so
+    every row of the CSV satisfies it. M0 and alpha follow Eq. 7 at the new M* with the disc's OWN
+    z_M0 and z_alpha, and t_age is unchanged: the test depends only on M* and z_R0, so keeping these
+    deviates gives the same distributions as redrawing them. Flagged by flag_R0_rmin_redrawn.
+    Why: f_M = (r_c/r_in)^xi - 1 (Tabone et al. 2022, Eqs. 22/31) assumes r_c >> r_in; in pilot 3 the two
+    f_M outliers (discs 359 and 422) both had R0/r_min < 3. Consequences: since r_min >= 0.03 au, every
+    disc now has R0 >= 0.15 au, so the clip above, the r_min > R0 error and the R0 <= R_in error cannot
+    trigger, and xi = ln(1+f_M)/ln(R0/0.03 au) (Malanga Eq. 6) stays <= 0.14. The compact tail of Malanga's
+    R0 distribution (Eq. 7, Table 2) is removed; Eq. 7 itself has no such cut (see print_summary for the size).
  6. psi_raw = alpha / alpha_SS - 1 (alpha_SS fixed for every disc; DEFAULT 1e-5 since 2026-10-28,
     was 1e-4). psi_raw < 0 where the drawn alpha < alpha_SS: the MEDIAN alpha of Malanga Eq. 7,
     log10 alpha = -3.4 + 2.0 log10(M*/0.3), equals alpha_SS at
@@ -190,6 +203,9 @@ MSTAR_RANGE = (0.1, 1.4)    # Msun
 # (2026-10-30, user's choice) Gaussian scatter added to log10 M* of each Table A.1 draw [dex]; the value is
 # Malanga et al. (2026) Sec. 2.4 (p. 3), their adopted uncertainty on log10 M*. 0 = exact table values.
 MSTAR_SCATTER_DEX = 0.1
+# (2026-10-30, user's choice) minimum R0 / r_min (dimensionless, both in au): a draw below it is discarded and
+# the disc gets a completely new star and R0 (see draw_population and the module docstring, point 5). 0 = off.
+R0_RMIN_MIN = 5.0
 OFFGRID_FLAG = 0.05         # flag discs whose initial profile has > 5 % of its mass beyond r_max
 LAMBDA_MIN_WIND = 1.5       # accretion-powered MHD wind needs lambda > 3/2 (Tabone et al. 2022, Sec. 2.3)
 
@@ -246,7 +262,7 @@ def offgrid_mass_fraction(R0, rmax):
     return np.exp(-rmax / np.asarray(R0, dtype=float))
 
 
-def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX):
+def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX, R0_rmin_min=R0_RMIN_MIN):
     """
     Draw N discs with per-disc M*. Returns (dict of columns, info dict).
 
@@ -261,14 +277,18 @@ def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX):
       * (2026-10-30) M* scatter of the first draw: one standard normal per disc from a THIRD child
         generator. M* scatter of each redraw: from a FOURTH child, consumed in the same disc order as
         the second, so the sequence of redraw INDICES is the same as without scatter.
+      * (2026-10-30) new star + new R0 of a draw with R0 / r_min < R0_rmin_min: from a FIFTH child,
+        consumed disc by disc in id order. Discs that pass the test the first time are identical to
+        the population without this restriction.
     All streams are filled element by element, so disc i is identical for ANY N (increasing N
     only appends discs). Other redraws: ages outside (0, T_FINAL_MYR] (> 4.7 sigma).
     """
     rng = np.random.default_rng(seed)
     # spawn(n)[j] is the same child for any n > j (same spawn key), so the first two streams are unchanged
-    # (2026-10-30: third and fourth children added for the M* scatter of first draws and of redraws)
-    rng_Mstar, rng_Mstar_redraw, rng_Mstar_scatter, rng_Mstar_redraw_scatter = (
-        np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(4))
+    # (2026-10-30: third and fourth children added for the M* scatter of first draws and of redraws;
+    # fifth child for the discs restarted by the R0 / r_min restriction)
+    rng_Mstar, rng_Mstar_redraw, rng_Mstar_scatter, rng_Mstar_redraw_scatter, rng_restart = (
+        np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(5))
 
     # ---- 1-2: stellar mass, radius, Teff and luminosity ----
     lupus_M = load_lupus_Mstar_Hof()                                    # Msun, 65 values
@@ -291,6 +311,33 @@ def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX):
             k[i] = rng_Mstar_redraw.integers(0, lupus_M.size)
             Mstar_drawn[i] = lupus_M[k[i]] * 10 ** (Mstar_scatter_dex * rng_Mstar_redraw_scatter.standard_normal())   # Msun
             n_Mstar_redraws += 1
+    z = rng.standard_normal((N, 4))                        # row i = disc i: (z_M0, z_R0, z_alpha, z_t)
+
+    # (2026-10-30) restriction R0 / r_min >= R0_rmin_min: a draw below it is discarded and the disc starts
+    # again from M* (new table entry + scatter, range test) with a new z_R0, until the ratio passes
+    def R0_and_rmin(M_raw, z_R0):
+        """R0 [au] and r_min [au] of draws with unrounded M* M_raw [Msun] (arrays), rounded exactly as
+        further below (the values passed to the code), so the test holds for the CSV values."""
+        p = TABLE2["R0"]
+        M = round_sig(M_raw, SIG_FIGS_STAR["Mstar"])                                       # Msun
+        R0_try = 10 ** (p["log10_median"] + p["lambda"] * np.log10(M / M_NORM) + p["sigma_dex"] * z_R0)   # au
+        return round_sig(R0_try, SIG_FIGS["R0"]), rmin_from_Rstar(round_sig(star_R_Teff_Hof(M)[0], SIG_FIGS_STAR["Rstar"]))[0]
+
+    R0_first, rmin_first = R0_and_rmin(Mstar_drawn, z[:, 1])   # au
+    restarted = R0_first / rmin_first < R0_rmin_min            # discs whose first complete draw is discarded
+    n_restarts = 0                                             # total number of discarded draws
+    for i in np.flatnonzero(restarted):                        # disc id order -> prefix-stable in N
+        passed = False
+        while not passed:
+            n_restarts += 1
+            while True:                                        # new star: table entry + scatter, inside MSTAR_RANGE
+                k[i] = rng_restart.integers(0, lupus_M.size)
+                Mstar_drawn[i] = lupus_M[k[i]] * 10 ** (Mstar_scatter_dex * rng_restart.standard_normal())   # Msun
+                if in_range(Mstar_drawn[i]):
+                    break
+            z[i, 1] = rng_restart.standard_normal()            # new R0 (z_R0); z_M0, z_alpha, z_t are kept
+            R0_new, rmin_new = R0_and_rmin(Mstar_drawn[i:i + 1], z[i:i + 1, 1])   # au, arrays of length 1
+            passed = bool(R0_new[0] / rmin_new[0] >= R0_rmin_min)
 
     Mstar = round_sig(Mstar_drawn, SIG_FIGS_STAR["Mstar"])              # Msun
     Rstar, Teff = star_R_Teff_Hof(Mstar)                                # Rsun, K
@@ -310,7 +357,7 @@ def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX):
         """t_age ~ N(<t>, sigma_t) [Myr], given standard-normal deviate(s) z."""
         return TABLE2["t_age"]["mean_Myr"] + TABLE2["t_age"]["sigma_Myr"] * z
 
-    z = rng.standard_normal((N, 4))                        # row i = disc i: (z_M0, z_R0, z_alpha, z_t)
+    # (2026-10-30) z is now drawn above (the R0 / r_min restriction needs z_R0); same rows from the same rng
     M0 = lognormal("M0", z[:, 0])                          # Msun
     R0_drawn = lognormal("R0", z[:, 1])                    # au, before clipping
     alpha_DW = lognormal("alpha_DW", z[:, 2])              # dimensionless, Malanga's (= our TOTAL) alpha
@@ -377,6 +424,9 @@ def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX):
     if np.any(bad_edge := rmin > R0):
         raise ValueError(f"{int(bad_edge.sum())} disc(s) with r_min > R0 (ids {np.flatnonzero(bad_edge).tolist()}): "
                          "decide how to treat them (clip R0 up to r_min, or redraw) before using this population")
+    # (2026-10-30) the restriction must hold for the values actually written (R0, r_min in au, same rounding)
+    if np.any(R0 / rmin < R0_rmin_min):
+        raise AssertionError(f"R0 / r_min < {R0_rmin_min} for ids {np.flatnonzero(R0 / rmin < R0_rmin_min).tolist()}")
     rmax = rmax_from_R0(R0)                                # au, from the (possibly clipped) R0
 
     # wind loss the run can produce inside its own grid (r_min to R0); 0 without wind
@@ -400,6 +450,8 @@ def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX):
         # [au], the R*-only value before the floor / cap
         "rmin_Rstar_au": r_Rstar, "flag_rmin_floor": flag_rmin_floor, "flag_rmin_cap": flag_rmin_cap,
         "M0_Msun": M0, "R0_au": R0, "R0_drawn_au": R0_drawn,
+        # (2026-10-30) R0 / r_min (dimensionless) and whether the first complete draw failed the restriction
+        "R0_over_rmin": R0 / rmin, "flag_R0_rmin_redrawn": restarted.astype(int),
         "alpha_DW_Malanga": alpha_DW, "alpha_tot": alpha_tot, "alpha_SS": np.full(N, alpha_SS),
         "psi_raw": psi_raw, "psi_DW": psi, "psi_floored": floored.astype(int),
         "xi": xi, "f_M": np.full(N, f_M), "f_M_grid_expected": fM_grid,
@@ -415,6 +467,8 @@ def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX):
         "n_rmin_floor": int(flag_rmin_floor.sum()), "n_rmin_cap": int(flag_rmin_cap.sum()),   # (2026-10-27; 0.1 au cap since 2026-10-28)
         # (2026-10-29) M* range restriction: discs redrawn, and total extra draws needed
         "n_Mstar_redrawn": int(redrawn.sum()), "n_Mstar_redraws": n_Mstar_redraws,
+        # (2026-10-30) R0 / r_min restriction: discs restarted, and total draws discarded
+        "n_R0_rmin_redrawn": int(restarted.sum()), "n_R0_rmin_discarded": n_restarts,
     }
     return cols, info
 
@@ -453,6 +507,9 @@ def print_summary(cols, info):
     # reduced by the redraws at the range edges)
     dlogM = np.log10(cols["Mstar_Msun"] / cols["Mstar_table_Msun"])     # dex
     print(f"M* scatter applied: mean {dlogM.mean():+.3f}  std {dlogM.std():.3f} dex")
+    # (2026-10-30) the restriction removes the compact tail, so the R0 residuals below are slightly biased high
+    print(f"R0 / r_min: min {cols['R0_over_rmin'].min():.3f}; {info['n_R0_rmin_redrawn']} discs restarted with a new "
+          f"star and R0 ({info['n_R0_rmin_discarded']} draws discarded)")
     print("Eq. 7 residuals, log10(X) - [median + lambda log10(M*/0.3)]  (target: mean 0, std sigma):")
     for name, col in [("M0", "M0_Msun"), ("R0", "R0_drawn_au"), ("alpha_DW", "alpha_DW_Malanga")]:
         p = TABLE2[name]
@@ -506,6 +563,9 @@ if __name__ == "__main__":
     # (Hof, 2026-10-30) Malanga et al. (2026) Sec. 2.4, p. 3; 0 = exact Table A.1 values (population v3)
     ap.add_argument("--Mstar_scatter_dex", type=float, default=MSTAR_SCATTER_DEX,
                     help=f"Gaussian scatter added to log10 M* of each Table A.1 draw [dex; default {MSTAR_SCATTER_DEX}]")
+    # (Hof, 2026-10-30) see the module docstring, point 5; 0 = no restriction
+    ap.add_argument("--R0_rmin_min", type=float, default=R0_RMIN_MIN,
+                    help=f"discard draws with R0 / r_min below this, new star and new R0 (default {R0_RMIN_MIN})")
     ap.add_argument("--out", type=str, default=None,
                     help="output CSV path (default config/malanga/malanga_mstar_draws_Hof_N<N>_seed<seed>.csv); "
                          "a .json with the same stem is written next to it")
@@ -513,7 +573,7 @@ if __name__ == "__main__":
 
     out = args.out or os.path.join(here, "config", "malanga",
                                    f"malanga_mstar_draws_Hof_N{args.N}_seed{args.seed}.csv")
-    cols, info = draw_population(args.N, args.seed, args.alpha_SS, args.Mstar_scatter_dex)
+    cols, info = draw_population(args.N, args.seed, args.alpha_SS, args.Mstar_scatter_dex, args.R0_rmin_min)
     write_csv_mstar(out, cols)
 
     meta = {
@@ -539,6 +599,11 @@ if __name__ == "__main__":
                                               "was 400 R0); nr from the config"},
         "psi_floor": "psi_DW = max(alpha_DW / alpha_SS - 1, 0); floored discs: e_rad = 1, lambda = inf (no wind)",
         "R0_rule": "R0 < 0.03 au (the r_min floor) is clipped to 0.03 au (flag_R0_clipped); then r_min <= R0",
+        # (2026-10-30) minimum R0 / r_min (dimensionless)
+        "R0_rmin_min": args.R0_rmin_min,
+        "R0_rmin_rule": "a draw with R0 / r_min below R0_rmin_min is discarded; the disc gets a new star (table entry, "
+                        "scatter, range test) and a new z_R0 until it passes (flag_R0_rmin_redrawn); z_M0, z_alpha, "
+                        "t_age are kept, M0 and alpha follow Eq. 7 at the new M*",
         "lambda_rule": "Balogh et al. (2026) Eq. 16 with e_rad from relation D (xi from Malanga Eq. 6)",
         "TABLE2": TABLE2, "M_NORM_Msun": M_NORM, "R_IN_au": R_IN,
         "T_FINAL_Myr": T_FINAL_MYR, "SIG_FIGS": {**SIG_FIGS, **SIG_FIGS_STAR}, **info,

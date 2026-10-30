@@ -247,7 +247,9 @@ with one further addition -- see that file's own docstring.)
  nothing changed in THIS file: r_min still arrives through --rmin.
  (2026-10-30) the sampler adds a 0.1 dex Gaussian scatter to log10 M* of each Table A.1 draw (Malanga
  et al. 2026, Sec. 2.4, p. 3) and restricts M* to 0.1-1.4 Msun (was 1.5, the BHAC15 table stops at 1.4);
- nothing changed in THIS file: M* still arrives through --Mstar.]
+ nothing changed in THIS file: M* still arrives through --Mstar.
+ (2026-10-30) the sampler discards draws with R0 / r_min < 5 (new star and new R0, until it passes);
+ nothing changed in THIS file: M*, R0 and r_min still arrive through --Mstar, --Rd and --rmin.]
  In THIS file:
    * new CLI flags, routed through the same `overrides` dict as the other flags (so they are
      printed and recorded in the logged config):
