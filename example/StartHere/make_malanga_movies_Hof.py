@@ -39,6 +39,20 @@ Usage (with the project venv; run where the data are, e.g. on Nibi):
              --n-frames 150  --fps 15  --dt-win 0.02 [Myr]  --dpi 100  --exclude-gi
 Outputs: <out-dir>/malanga_M_Mdot[_noGI].gif and <out-dir>/malanga_Mdotwind_Mdot[_noGI].gif
 
+(Hof, 2026-11-02) Also works for the per-disc-M* population (population v4, run_popsynth_malanga_mstar_full_Hof.sh):
+    * the population CSV may be malanga_draws_Hof_*.csv (1 Msun) OR malanga_mstar_draws_Hof_*.csv (per-disc M*);
+    * "R0 beyond the grid" (movie 2, hollow spots) now compares R0 with EACH disc's own outer cell [AU] (per-disc
+      grids since population v3), not with the first file's;
+    * --psi-scale auto|linear|log (default auto): psi colour scale. auto = log when every psi > 0 and they span more
+      than 2 decades (population v4: psi ~ 1-900, since psi grows ~ M*^2), otherwise linear as before (1 Msun population);
+    * --movie both|M_Mdot|Mdotwind (default both): which GIF(s) to write;
+    * the titles say "per-disc M*" when the CSV's Mstar_Msun is not the same for every disc.
+    Full time series of population v4 in the Mdot_* - M plane, coloured by psi (run on Nibi, where the data are):
+        python make_malanga_movies_Hof.py --movie M_Mdot --t-start 0.001 --n-frames 200 \
+            --data-dir /scratch/imontesd/output/DiscEvolution/popsynth/malanga_mstar_aSS1e-5_v4
+    t-start must be > 0 (frames are log-spaced); 0.001 Myr is the first snapshot after t = 0. Caveat: the Mdot_*
+    diagnostic needs a few kyr to settle (it can start ~2x off, or negative), so the first frames are a transient.
+
 Units (see CLAUDE.md): HDF5 't' [yr], 'disk_Mass' [g] (/ Msun), 'disk_Mdot_star' [Msun/yr], 'R' [AU],
 'T' [K], 'Sigma_G' [g/cm^2]. Only the scalar time series (written every 5 steps) are used for M and
 Mdot, not the 34 snapshots, so the movie has the full time resolution.
@@ -101,15 +115,17 @@ def load_population(data_dir, t_frames_yr, dt_win_yr):
     """Interpolate every disc onto the frame times (yr). Returns (meta DataFrame, M, Mdot, Mdot_wind),
     the three arrays of shape (n_discs, n_frames) in Msun, Msun/yr, Msun/yr. Each file is reduced to the
     frame grid as soon as it is read, so memory stays small for 500 long time series."""
-    csvs = glob.glob(os.path.join(data_dir, "malanga_draws_Hof_*.csv"))
+    # (Hof, 2026-11-02) 1 Msun population (malanga_draws_Hof_*) OR per-disc-M* population (malanga_mstar_draws_Hof_*)
+    csvs = (glob.glob(os.path.join(data_dir, "malanga_draws_Hof_*.csv"))
+            + glob.glob(os.path.join(data_dir, "malanga_mstar_draws_Hof_*.csv")))
     if len(csvs) != 1:
-        sys.exit(f"ERROR: expected exactly one malanga_draws_Hof_*.csv in {data_dir}, found {csvs}")
+        sys.exit(f"ERROR: expected exactly one population CSV (malanga_[mstar_]draws_Hof_*.csv) in {data_dir}, found {csvs}")
     draws = pd.read_csv(csvs[0]).set_index("id")
     files = sorted(glob.glob(os.path.join(data_dir, "hof_malanga_w0_*.h5")))
     if not files:
         sys.exit(f"ERROR: no hof_malanga_w0_*.h5 files in {data_dir}")
-    with h5py.File(files[0], "r") as h:
-        R_grid_max = float(h["R"][-1])                                       # AU, outer grid cell
+    # (Hof, 2026-11-02) the outer grid cell is now read PER DISC below: since population v3 every disc has its own
+    # grid (r_max = min(20 R0, 1000 au)), so the first file's grid no longer applies to the others
 
     meta, Ms, Mds, Mws = [], [], [], []
     off = np.linspace(-1.0, 1.0, N_WIN)                                       # window offsets (x dt)
@@ -125,6 +141,7 @@ def load_population(data_dir, t_frames_yr, dt_win_yr):
             # time series (written every 5 steps) can stop a few steps earlier
             t_end_run = max(float(t[-1]) if len(t) else 0.0,
                             float(h["time_snap"][-1]) * 1e6 if "time_snap" in h and len(h["time_snap"]) else 0.0)
+            R_grid_max = float(h["R"][-1])                                   # AU, this disc's outer grid cell
         nan = np.full(len(t_frames_yr), np.nan)
         if len(t) < 2:                                                       # no usable time series
             Ms.append(nan); Mds.append(nan); Mws.append(nan)
@@ -142,6 +159,7 @@ def load_population(data_dir, t_frames_yr, dt_win_yr):
             Ms.append(np.where(inside, Mf, np.nan)); Mds.append(np.where(inside, Mdf, np.nan))
             Mws.append(np.where(inside, Mw, np.nan))
         meta.append({"id": disc_id, "psi_DW": d.psi_DW, "R0_au": d.R0_au, "GI_flag": gi,
+                     "Mstar_Msun": float(d.get("Mstar_Msun", 1.0)),           # Msun (1 Msun population: 1)
                      "beyond_grid": bool(d.R0_au > R_grid_max)})
         if (k + 1) % 50 == 0 or k + 1 == len(files):
             print(f"  loaded {k + 1}/{len(files)} discs", flush=True)
@@ -185,6 +203,15 @@ def style_axes(ax):
 # Movies
 # ============================================================================
 
+def population_label(meta):
+    """(Hof, 2026-11-02) Title fragment: "per-disc M*" if M* differs between discs, else the common M*."""
+    ms = meta.Mstar_Msun.to_numpy()
+    return r"per-disc $M_*$" if np.ptp(ms) > 0 else rf"$M_* = {ms[0]:g}\,M_\odot$"
+
+
+PSI_LABEL = r"$\psi_{\rm DW} = \alpha_{\rm tot}/\alpha_{\rm SS} - 1$"
+
+
 def movie_M_Mdot(meta, M, Md, t_myr, psi_norm, out, fps, dpi):
     """Movie 1: log M - log Mdot_* (animated Malanga Fig. 4b), psi colour, two isochrones."""
     logM, logMd = safe_log(M), safe_log(Md)
@@ -205,7 +232,7 @@ def movie_M_Mdot(meta, M, Md, t_myr, psi_norm, out, fps, dpi):
     tri = ax.scatter([], [], s=60, marker="^", edgecolor=INK, lw=0.5, zorder=3)
     # time / count text ABOVE the axes and legend BELOW them: nothing ever hides a disc
     label = ax.text(1.0, 1.01, "", transform=ax.transAxes, ha="right", va="bottom", color=INK, fontsize=10)
-    ax.set_title(r"DiscEvolution hybrid-wind population ($M_* = 1\,M_\odot$): $\dot M_*$ vs $M$" "\n",
+    ax.set_title(rf"DiscEvolution hybrid-wind population ({population_label(meta)}): $\dot M_*$ vs $M$" "\n",
                  loc="left", color=INK, fontsize=11)
     fig.legend(handles=[
         Line2D([], [], color=INK, lw=1.5, label=rf"$M/\dot M = 2\,t_{{\rm Lupus}}$ ({LUPUS_MEAN_AGE_MYR:g} Myr)"),
@@ -215,7 +242,7 @@ def movie_M_Mdot(meta, M, Md, t_myr, psi_norm, out, fps, dpi):
         Line2D([], [], marker="o", ls="", mfc="none", mec=FADED, ms=5, label="below detection (dispersed)")],
         loc="outside lower center", ncols=3, frameon=False, fontsize=9)
     cb = fig.colorbar(plt.cm.ScalarMappable(norm=psi_norm, cmap=PSI_CMAP), ax=ax, pad=0.02)
-    cb.set_label(r"$\psi_{\rm DW} = \alpha_{\rm tot}/\alpha_{\rm SS} - 1$")
+    cb.set_label(PSI_LABEL + ("  (log scale)" if isinstance(psi_norm, mcolors.LogNorm) else ""))
 
     def update(j):
         x, y = logM[:, j], logMd[:, j]
@@ -272,7 +299,7 @@ def movie_Mdotwind_Mdot(meta, M, Md, Mw, t_myr, psi_norm, out, fps, dpi):
         loc="outside lower center", ncols=4, frameon=False, fontsize=8.5,
         title="lines, markers, and spot size = disc mass", title_fontsize=8.5)
     cb = fig.colorbar(plt.cm.ScalarMappable(norm=psi_norm, cmap=PSI_CMAP), ax=ax, pad=0.02)
-    cb.set_label(r"$\psi_{\rm DW} = \alpha_{\rm tot}/\alpha_{\rm SS} - 1$")
+    cb.set_label(PSI_LABEL + ("  (log scale)" if isinstance(psi_norm, mcolors.LogNorm) else ""))
 
     def update(j):
         x, y, lm = logMd[:, j], logMw[:, j], logM[:, j]
@@ -311,6 +338,10 @@ if __name__ == "__main__":
     ap.add_argument("--dt-win", type=float, default=0.02, help="half-width of the Mdot_wind window [Myr]")
     ap.add_argument("--dpi", type=int, default=100, help="GIF resolution (default 100)")
     ap.add_argument("--exclude-gi", action="store_true", help="drop GI-flagged discs (adds _noGI to names)")
+    # (Hof, 2026-11-02) see the module docstring
+    ap.add_argument("--psi-scale", choices=["auto", "linear", "log"], default="auto",
+                    help="psi colour scale (default auto: log if all psi > 0 and they span > 2 decades)")
+    ap.add_argument("--movie", choices=["both", "M_Mdot", "Mdotwind"], default="both", help="which GIF(s) to write")
     args = ap.parse_args()
 
     out_dir = args.out_dir or os.path.join(args.data_dir, "movies")
@@ -324,11 +355,23 @@ if __name__ == "__main__":
         print(f"Excluding {int((~keep).sum())} GI-flagged discs")
         meta, M, Md, Mw = meta[keep].reset_index(drop=True), M[keep], Md[keep], Mw[keep]
     suffix = "_noGI" if args.exclude_gi else ""
-    psi_norm = mcolors.Normalize(vmin=meta.psi_DW.min(), vmax=meta.psi_DW.max())   # same in both movies
+    # (Hof, 2026-11-02) psi colour scale, the same in both movies: linear as before, or log for a population whose
+    # psi spans several decades (population v4, psi ~ M*^2: a linear scale would leave almost every disc pale)
+    psi_min, psi_max = meta.psi_DW.min(), meta.psi_DW.max()                  # dimensionless
+    use_log = (args.psi_scale == "log"
+               or (args.psi_scale == "auto" and psi_min > 0 and psi_max / psi_min > 100))
+    if use_log and psi_min <= 0:
+        sys.exit("ERROR: --psi-scale log needs every psi > 0 (this population has floored discs, psi = 0)")
+    psi_norm = (mcolors.LogNorm(vmin=psi_min, vmax=psi_max) if use_log
+                else mcolors.Normalize(vmin=psi_min, vmax=psi_max))
+    print(f"psi colour scale: {'log' if use_log else 'linear'}, {psi_min:.3g}-{psi_max:.3g}")
 
-    out1 = os.path.join(out_dir, f"malanga_M_Mdot{suffix}.gif")
-    print(f"Writing {out1}"); movie_M_Mdot(meta, M, Md, t_myr, psi_norm, out1, args.fps, args.dpi)
-    out2 = os.path.join(out_dir, f"malanga_Mdotwind_Mdot{suffix}.gif")
-    print(f"Writing {out2}"); movie_Mdotwind_Mdot(meta, M, Md, Mw, t_myr, psi_norm, out2, args.fps, args.dpi)
-    for o in (out1, out2):
+    outs = []
+    if args.movie in ("both", "M_Mdot"):
+        outs.append(os.path.join(out_dir, f"malanga_M_Mdot{suffix}.gif"))
+        print(f"Writing {outs[-1]}"); movie_M_Mdot(meta, M, Md, t_myr, psi_norm, outs[-1], args.fps, args.dpi)
+    if args.movie in ("both", "Mdotwind"):
+        outs.append(os.path.join(out_dir, f"malanga_Mdotwind_Mdot{suffix}.gif"))
+        print(f"Writing {outs[-1]}"); movie_Mdotwind_Mdot(meta, M, Md, Mw, t_myr, psi_norm, outs[-1], args.fps, args.dpi)
+    for o in outs:
         print(f"  {o}  ({os.path.getsize(o) / 1e6:.1f} MB)")
