@@ -34,6 +34,9 @@ Both movies:
       fade to small grey hollow points; the frame text gives the live number of detected discs.
 
 Usage (with the project venv; run where the data are, e.g. on Nibi):
+    # (Hof, 2026-11-03) NOTE: this example folder is the 1 Msun population (every M* = 1 Msun). The movie is drawn
+    # from whatever runs are in --data-dir, so for the per-disc-M* population v4 use its own folder instead
+    # (.../popsynth/malanga_mstar_aSS1e-5_v4, see the population v4 example further below).
     python make_malanga_movies_Hof.py --data-dir /home/imontesd/projects/def-mbalogh/imontesd/output/DiscEvolution/popsynth/malanga/full
     options: --out-dir DIR (default: DATA_DIR/movies)  --t-start 0.06  --t-end 3.0  [Myr]
              --n-frames 150  --fps 15  --dt-win 0.02 [Myr]  --dpi 100  --exclude-gi
