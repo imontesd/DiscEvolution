@@ -1,0 +1,87 @@
+{
+  "created": "2026-11-09T09:58:35",
+  "script": "sample_malanga_mstar_Hof.py",
+  "git_commit": "b292e53c",
+  "N": 500,
+  "seed": 1,
+  "alpha_SS": 1e-05,
+  "Mstar_source": "config/malanga/lupus_TableA1_Mstar_Hof.csv (Malanga et al. 2026 Table A.1, 65 measured M*, bootstrap, plus the scatter below)",
+  "Mstar_scatter_dex": 0.1,
+  "Mstar_range_Msun": [
+    0.1,
+    1.4
+  ],
+  "Mstar_range_rule": "M* (after the scatter) outside Mstar_range_Msun is redrawn from Table A.1, with a new scatter (own random stream, disc order) until inside; discs whose first draw is inside keep it (flag_Mstar_redrawn = 0)",
+  "star_source": "config/malanga/BHAC15_iso_0.5Myr_Hof.csv (BHAC15, 0.5 Myr isochrone, linear interpolation in log-log)",
+  "grid_rule": {
+    "rmin_anchor_au": 0.1,
+    "rmin_anchor_Mstar_Msun": 1.0,
+    "rmin_Rstar_exponent": 1.7142857142857142,
+    "rmin_cap_au": 0.1,
+    "rmin_floor_au": 0.03,
+    "rmax_frac_R0": 20.0,
+    "rmax_cap_au": 1000.0,
+    "rmin_anchor_Rstar_Rsun": 3.079,
+    "formula": "r_min = max(min(0.1 au (R*/R*(1 Msun))^(12/7), 0.1 au), 0.03 au), exponent 12/7 = R* dependence of Konigl (1991) Eq. 1 (mu = B* R*^3); r_max = min(20 R0, 1000 au) (20 R0 since 2026-10-29, was 400 R0); nr from the config"
+  },
+  "psi_floor": "psi_DW = max(alpha_DW / alpha_SS - 1, 0); floored discs: e_rad = 1, lambda = inf (no wind)",
+  "R0_rule": "R0 < 0.03 au (the r_min floor) is clipped to 0.03 au (flag_R0_clipped); then r_min <= R0",
+  "R0_rmin_min": 5.0,
+  "R0_rmin_rule": "a draw with R0 / r_min below R0_rmin_min is discarded; the disc gets a new star (table entry, scatter, range test) and a new z_R0 until it passes (flag_R0_rmin_redrawn); z_M0, z_alpha, t_age are kept, M0 and alpha follow Eq. 7 at the new M*",
+  "lambda_rule": "Balogh et al. (2026) Eq. 16 with e_rad from relation D (xi from Malanga Eq. 6)",
+  "xi_rule": "xi = ln(1 + f_M) / ln(R0 / r_min), r_min = each disc's grid edge [au], so (R0/r_min)^xi - 1 = f_M on every grid (population v5; v3/v4 used 0.03 au, see git commit b292e53c)",
+  "TABLE2": {
+    "M0": {
+      "log10_median": -2.3,
+      "lambda": 2.0,
+      "sigma_dex": 0.4,
+      "units": "Msun"
+    },
+    "R0": {
+      "log10_median": 0.7,
+      "lambda": 1.0,
+      "sigma_dex": 0.6,
+      "units": "au"
+    },
+    "alpha_DW": {
+      "log10_median": -3.4,
+      "lambda": 2.0,
+      "sigma_dex": 0.1,
+      "units": "dimensionless"
+    },
+    "f_M": {
+      "log10_value": -0.6,
+      "units": "dimensionless"
+    },
+    "t_age": {
+      "mean_Myr": 1.6,
+      "sigma_Myr": 0.3
+    }
+  },
+  "M_NORM_Msun": 0.3,
+  "R_IN_au": 0.03,
+  "T_FINAL_Myr": 3.0,
+  "SIG_FIGS": {
+    "M0": 4,
+    "R0": 4,
+    "psi_DW": 4,
+    "e_rad": 6,
+    "Mstar": 6,
+    "Rstar": 6,
+    "Teff": 6,
+    "rmin": 4,
+    "rmax": 4
+  },
+  "n_psi_floored": 0,
+  "n_R0_clipped": 0,
+  "n_lambda_lt_1p5": 0,
+  "n_offgrid_flagged": 1,
+  "n_t_age_redrawn": 0,
+  "lambda_roundtrip_max_relerr": 1.7420021060754465e-05,
+  "n_rmin_floor": 151,
+  "n_rmin_cap": 13,
+  "n_Mstar_redrawn": 144,
+  "n_Mstar_redraws": 195,
+  "n_R0_rmin_redrawn": 8,
+  "n_R0_rmin_discarded": 8
+}
