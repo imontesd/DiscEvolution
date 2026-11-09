@@ -96,6 +96,11 @@ export SCRIPT_DIR DRAWS_CSV OUTPUT_ROOT OUTDIR LOGDIR
 export NPROC="${SLURM_CPUS_PER_TASK:-${NPROC:-20}}"     # runs at once = CPUs actually granted by Slurm
 
 
+# (Hof, 2026-11-09) PILOT ONLY: 20 discs (17 off the 0.03 au r_min floor, spanning the v4 f_M deficit; 3 floor controls
+# 153, 269, 333 that must reproduce v4 exactly). IDS is read ONLY by run_popsynth_malanga_Hof.sh (the pilot launcher);
+# run_popsynth_malanga_full_Hof.sh ignores it on purpose and would run all 500 discs.
 export IDS="6 23 30 72 128 153 199 245 263 267 269 306 312 321 333 368 373 379 403 497"
 
-bash "$SCRIPT_DIR/run_popsynth_malanga_full_Hof.sh"
+# PILOT: the pilot launcher (honours IDS). For the FULL v5 run, delete the IDS line above and call
+# run_popsynth_malanga_full_Hof.sh here instead (and restore the full-run #SBATCH request).
+bash "$SCRIPT_DIR/run_popsynth_malanga_Hof.sh"
