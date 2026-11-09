@@ -55,14 +55,16 @@
     "output_dir": "/scratch/imontesd/output/DiscEvolution/popsynth/malanga"
   },
   "disc": {
-    "alpha": 0.0044,
-    "M": 0.056,
-    "d2g": 0.01,
-    "Mdot": 1e-08,
-    "Sc": 1.0,
-    "Rd": 16.7,
-    "gamma": 1
-  },
+        "alpha": 1e-3,
+        "M": 0.1,
+        "d2g": 0.01,
+        "d2g_SI": 0.02,
+        "Mdot": 1.0e-8,
+        "Sc": 1.0,
+        "Rd": 50,
+        "gamma": 1
+    },
+
   "calibration": {
     "solve_for": "none",
     "hold": "alpha_SS",
@@ -98,60 +100,36 @@
     "assert_d2g": true
   },
   "planets": {
-    "include_planets": false,
-    "planet_model": "Bitsch2015Model",
-    "Rp": [
-      1,
-      2,
-      3,
-      4,
-      5,
-      7,
-      10,
-      15,
-      20,
-      25,
-      30
-    ],
-    "Mp": [
-      0.01,
-      0.01,
-      0.01,
-      0.01,
-      0.01,
-      0.01,
-      0.01,
-      0.01,
-      0.01,
-      0.01,
-      0.01
-    ],
-    "implant_time": [
-      60000,
-      60000,
-      60000,
-      60000,
-      60000,
-      600000,
-      600000,
-      600000,
-      600000,
-      600000,
-      600000
-    ],
-    "pb_gas_f": 0.1,
-    "migrate": true,
-    "pebble_accretion": true,
-    "gas_accretion": true,
-    "planetesimal_accretion": true
-  },
+        "include_planets": true,
+        "planet_model": "Bitsch2015Model",
+        "rho_core": 5.5,
+        "Rp": [0.2, 0.3, 0.4, 0.5, 0.7, 1, 2, 3, 4, 5, 7, 10, 15, 20, 25, 30],
+        "Mp": ["SI", "SI", "SI", "SI", "SI", "SI", "SI", "SI", "SI", "SI", "SI", "SI", "SI", "SI", "SI", "SI"],
+        "f_plt": 400,
+        "implant_time": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "pb_gas_f": 0.05,
+        "migrate": true,
+        "pebble_accretion": true,
+        "gas_accretion": true,
+        "planetesimal_accretion_migrate": true,
+        "planetesimal_accretion_insitu": true
+    },
+
   "planetesimal": {
-    "active": false,
-    "diameter": 200,
-    "St_min": 0.01,
-    "St_max": 10,
-    "pla_eff": 0.1
-  },
+        "active": true,
+        "diameter": "SI",
+        "rho_pltsml": 2.0,
+        "St_min": 0.01,
+        "St_max": 10,
+        "pla_eff": 0.1,
+        "e_init": "eq",
+        "i_init": "eq",
+        "drag": true,
+        "VS_embryo": true,
+        "VS_pltsml": true,
+        "DF": true
+    },
+    
   "winds": {
     "on": true,
     "psi_DW": 43,
