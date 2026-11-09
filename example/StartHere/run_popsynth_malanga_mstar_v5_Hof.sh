@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --account=def-mbalogh
-#SBATCH --time=0-12:00:00            # same request as the v4 full run (run_popsynth_malanga_mstar_full_Hof.sh); same
+#SBATCH --time=2-12:00:00            # same request as the v4 full run (run_popsynth_malanga_mstar_full_Hof.sh); same
                                      # grids and the same 500 discs, only the wind parameters differ. The job ends when
                                      # the last disc ends, so unused time costs nothing
-#SBATCH --cpus-per-task=20          # one run per CPU; must fit on ONE node (NPROC below follows this value)
+#SBATCH --cpus-per-task=150          # one run per CPU; must fit on ONE node (NPROC below follows this value)
 #SBATCH --mem-per-cpu=500M           # 500 MB per CPU -> 150 x 0.5 GB = 75 GB for the job (RAM, not disk); as v4
 #SBATCH --job-name=hof_malanga_mstar_v5
 #SBATCH --output=/scratch/imontesd/output/DiscEvolution/logs/malanga-comparison/%x_%j.out   # this script's own echo output (folder must exist BEFORE sbatch)
@@ -93,14 +93,12 @@ awk -F, -v n_expected="$N_EXPECTED" -v ratio_min="$R0_RMIN_MIN" -v logfm="$LOG_F
 # DiscConfig_Hof_malanga_mstar.json; OUTDIR and LOGDIR override its "_v4" folder defaults).
 export POPULATION=mstar
 export SCRIPT_DIR DRAWS_CSV OUTPUT_ROOT OUTDIR LOGDIR
-export NPROC="${SLURM_CPUS_PER_TASK:-${NPROC:-20}}"     # runs at once = CPUs actually granted by Slurm
+export NPROC="${SLURM_CPUS_PER_TASK:-${NPROC:-150}}"     # runs at once = CPUs actually granted by Slurm
 
 
 # (Hof, 2026-11-09) PILOT ONLY: 20 discs (17 off the 0.03 au r_min floor, spanning the v4 f_M deficit; 3 floor controls
 # 153, 269, 333 that must reproduce v4 exactly). IDS is read ONLY by run_popsynth_malanga_Hof.sh (the pilot launcher);
 # run_popsynth_malanga_full_Hof.sh ignores it on purpose and would run all 500 discs.
-export IDS="6 23 30 72 128 153 199 245 263 267 269 306 312 321 333 368 373 379 403 497"
-
 # PILOT: the pilot launcher (honours IDS). For the FULL v5 run, delete the IDS line above and call
 # run_popsynth_malanga_full_Hof.sh here instead (and restore the full-run #SBATCH request).
-bash "$SCRIPT_DIR/run_popsynth_malanga_Hof.sh"
+bash "$SCRIPT_DIR/run_popsynth_malanga_full_Hof.sh"
