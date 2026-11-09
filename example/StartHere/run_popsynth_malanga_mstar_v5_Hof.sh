@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=def-mbalogh
-#SBATCH --time=0-8:00:00            # same request as the v4 full run (run_popsynth_malanga_mstar_full_Hof.sh); same
+#SBATCH --time=0-12:00:00            # same request as the v4 full run (run_popsynth_malanga_mstar_full_Hof.sh); same
                                      # grids and the same 500 discs, only the wind parameters differ. The job ends when
                                      # the last disc ends, so unused time costs nothing
 #SBATCH --cpus-per-task=20          # one run per CPU; must fit on ONE node (NPROC below follows this value)
