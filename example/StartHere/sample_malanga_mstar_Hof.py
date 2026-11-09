@@ -23,6 +23,10 @@ Usage
     python sample_malanga_mstar_Hof.py --alpha_SS 1e-4 --out config/malanga/malanga_mstar_draws_Hof_N500_seed1_aSS1e-4.csv
     # (2026-10-30) --Mstar_scatter_dex 0 turns the M* scatter off (exact Table A.1 values) and
     # --R0_rmin_min 0 turns the R0 / r_min restriction off; with both, population v3 is reproduced
+    # (2026-11-09) population v5: xi calibrated on each disc's own grid, r_min -> R0 (point 7). Written to
+    #   config/malanga/malanga_mstar_draws_Hof_N500_seed1_xirmin.csv  ("_xirmin": see the default --out below)
+    # Population v4 (xi from Malanga's R_in = 0.03 au, a mistake: see point 7) can only be regenerated from the
+    # version of this file in git commit b292e53c; its CSV, malanga_mstar_draws_Hof_N500_seed1.csv, is kept as is.
 Writes <out>.csv and <out>.json (metadata: seed, N, sources, rules, counts, git commit, ...).
 
 Units
@@ -127,6 +131,8 @@ The mapping, per disc i (decisions made with the user, 2026-10-26)
     disc now has R0 >= 0.15 au, so the clip above, the r_min > R0 error and the R0 <= R_in error cannot
     trigger, and xi = ln(1+f_M)/ln(R0/0.03 au) (Malanga Eq. 6) stays <= 0.14. The compact tail of Malanga's
     R0 distribution (Eq. 7, Table 2) is removed; Eq. 7 itself has no such cut (see print_summary for the size).
+    (2026-11-09) With xi now calibrated on r_min -> R0 (point 7), the same cut gives the same bound:
+    xi = ln(1.251) / ln(R0 / r_min) <= ln(1.251) / ln(5) = 0.139.
  6. psi_raw = alpha / alpha_SS - 1 (alpha_SS fixed for every disc; DEFAULT 1e-5 since 2026-10-28,
     was 1e-4). psi_raw < 0 where the drawn alpha < alpha_SS: the MEDIAN alpha of Malanga Eq. 7,
     log10 alpha = -3.4 + 2.0 log10(M*/0.3), equals alpha_SS at
@@ -135,15 +141,34 @@ The mapping, per disc i (decisions made with the user, 2026-10-26)
     max(alpha, alpha_SS). Floored discs are purely viscous (no wind): e_rad = 1, lambda = inf.
     Changing alpha_SS with the same seed keeps every disc's M*, M0, R0 and alpha (same random
     numbers); only psi, the wind parameters (xi aside), Mdot0 of floored discs and r_min follow.
- 7. psi_DW > 0, wind exactly as in sample_malanga_Hof.py:
-        xi    = ln(1 + f_M) / ln(R0 / R_in),  f_M = 10^-0.6, R_in = 0.03 au   (Malanga Eq. 6)
+ 7. psi_DW > 0, wind (same relations as sample_malanga_Hof.py; inner radius of xi REVISED 2026-11-09):
+        xi    = ln(1 + f_M) / ln(R0 / r_xi),  f_M = 10^-0.6                     (Malanga Eq. 6)
         e_rad = 1 - xi (psi + 1 + 2 xi) / (psi + 3)                              (relation D)
         lambda = 1 + psi / (2 (1 - e_rad) (3 + psi))                    (Balogh et al. 2026, Eq. 16;
                                                                           = the code's lambda_DW)
     With this e_rad the steady-state ejection index of the HYBRID disc equals xi (relation A in
-    sample_malanga_Hof.py), so every disc with psi > 0 targets Malanga's f_M. For small psi this
-    needs lambda -> 1, below the lambda > 3/2 of an accretion-powered wind (Tabone et al. 2022,
-    Sec. 2.3, p. 3); such discs are FLAGGED (flag_lambda_lt_1p5), not changed.
+    sample_malanga_Hof.py). For small psi this needs lambda -> 1, below the lambda > 3/2 of an
+    accretion-powered wind (Tabone et al. 2022, Sec. 2.3, p. 3); such discs are FLAGGED
+    (flag_lambda_lt_1p5), not changed.
+    (2026-11-09, user's decision) INNER RADIUS r_xi of the xi calibration is now r_min, each disc's own
+    inner grid edge [au], HARD-CODED (population v5). Populations v3 and v4 used r_xi = R_in = 0.03 au
+    (Malanga's value, Eq. 6, p. 5) while f_M_grid_expected and the runs use r_min: that inconsistency
+    was a MISTAKE, so it is not kept as an option (v4 is regenerated only from git commit b292e53c).
+    Why: Malanga's f_M is the wind loss from R_in to R0 divided by the accretion rate through R_in
+    (Tabone et al. 2022, Eqs. 20 and 22, p. 5: Mdot_acc(r) = Mdot_* (r/r_in)^xi, so
+    f_M = (r_c/r_in)^xi - 1). In our runs the disc ends at r_min: Mdot_* is the flux through r_min
+    and no wind is launched inside it, so r_min plays the role of R_in. With r_xi = 0.03 au the
+    target f_M was spread over 0.03 au -> R0, of which the grid only covers r_min -> R0, so every disc
+    with r_min > 0.03 au could reach only f_M,grid = (R0/r_min)^xi - 1 < 10^-0.6 (v4: median 0.226,
+    down to 0.150, i.e. -0.22 dex). With r_xi = r_min, f_M,grid = 10^-0.6 = 0.251 for EVERY wind disc
+    (exactly, before the 6 sf rounding of e_rad). Discs on the 0.03 au floor (r_min = R_in) are
+    unchanged. Trade-off: for r_min > 0.03 au, xi is LARGER than Malanga's by
+    ln(R0/0.03 au) / ln(R0/r_min), so e_rad and lambda are LOWER (more mass lost per unit wind
+    torque, Tabone et al. 2022, Eq. 9, p. 3); the run matches Malanga's f_M, not Malanga's xi.
+    Malanga's own value is kept in the CSV column xi_Malanga_Rin (for the lambda comparison, 6h).
+    Everything else in the population (M*, R*, Teff, M0, R0, alpha, psi, r_min, r_max, t_age) is
+    IDENTICAL to population v4 disc by disc: the random streams never see xi. Only xi, e_rad,
+    lambda_DW, Mdot0_est_Msun_yr and f_M_grid_expected differ.
  8. t_age ~ N(1.6, 0.3) Myr (Malanga Table 2) -- used ONLY by the analysis.
 """
 
@@ -385,14 +410,36 @@ def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX, R0_r
     alpha_tot = alpha_SS * (1.0 + psi)                     # TOTAL alpha exactly as the code rebuilds it
     wind = psi > 0
 
+    # ---- 4: grid edges (2026-10-29: r_min from the stellar radius ONLY, R*^(12/7) anchored at 1 Msun;
+    # was the full Konigl R_T with M*, R*, Mdot0, B*, beta) ----
+    # (2026-11-09) MOVED here from below the wind mapping, because xi now needs r_min (step 7). r_min
+    # depends on R* only and r_max on R0 only, so the values are exactly those of the old order.
+    rmin, r_Rstar, flag_rmin_floor, flag_rmin_cap = rmin_from_Rstar(Rstar)   # au (rmin 4 sf, same as R0)
+    # (2026-10-28) NOT guaranteed any more with the fixed 0.1 au cap (see module docstring, points 4-5):
+    # stop rather than run a disc whose grid starts outside its own characteristic radius
+    if np.any(bad_edge := rmin > R0):
+        raise ValueError(f"{int(bad_edge.sum())} disc(s) with r_min > R0 (ids {np.flatnonzero(bad_edge).tolist()}): "
+                         "decide how to treat them (clip R0 up to r_min, or redraw) before using this population")
+    # (2026-10-30) the restriction must hold for the values actually written (R0, r_min in au, same rounding)
+    if np.any(R0 / rmin < R0_rmin_min):
+        raise AssertionError(f"R0 / r_min < {R0_rmin_min} for ids {np.flatnonzero(R0 / rmin < R0_rmin_min).tolist()}")
+    rmax = rmax_from_R0(R0)                                # au, from the (possibly clipped) R0
+
     # ---- 7: wind mapping (psi > 0 only); floored discs: no wind ----
     f_M = 10 ** TABLE2["f_M"]["log10_value"]               # dimensionless, Malanga's target
-    # xi = ln(1+f_M)/ln(R0/R_IN) (Malanga Eq. 6) needs R0 > R_IN; a disc clipped to R0 = 0.03 au
-    # gets xi = NaN, which is harmless only if it has no wind
-    if np.any(wind & (R0 <= R_IN)):
-        raise ValueError(f"{int((wind & (R0 <= R_IN)).sum())} disc(s) with psi > 0 have R0 <= R_IN = {R_IN} au")
+    # (2026-11-09) xi is calibrated on the disc's OWN grid, r_min -> R0 (module docstring, point 7):
+    #     xi = ln(1 + f_M) / ln(R0 / r_min)    (Malanga Eq. 6, p. 5, with R_in -> r_min [au])
+    # so that (R0/r_min)^xi - 1 = f_M (Tabone et al. 2022, Eq. 22, p. 5) on every grid. Was R_in = 0.03 au
+    # (populations v3, v4), inconsistent with the r_min used for f_M_grid_expected and by the runs.
+    # xi needs R0 > r_min; a disc with R0 <= r_min gets xi = NaN, which is harmless only if it has no wind.
+    # (Cannot trigger: R0 > r_min is enforced above, and R0 / r_min >= 5 by the restriction.)
+    if np.any(bad_xi := wind & (R0 <= rmin)):
+        raise ValueError(f"{int(bad_xi.sum())} disc(s) with psi > 0 have R0 <= r_min")
     with np.errstate(divide="ignore", invalid="ignore"):
-        xi = np.where(R0 > R_IN, xi_from_fM(R0, f_M), np.nan)   # Malanga Eq. 6 (relation B)
+        xi = np.where(R0 > rmin, xi_from_fM(R0, f_M, R_in=rmin), np.nan)   # Malanga Eq. 6 (relation B), r_min in au
+        # Malanga's own xi (R_in = 0.03 au), kept for COMPARISON ONLY (CSV column xi_Malanga_Rin; the 6h lambda plot).
+        # Equal to xi for discs on the 0.03 au r_min floor, smaller than xi for all others.
+        xi_Malanga = np.where(R0 > R_IN, xi_from_fM(R0, f_M), np.nan)      # dimensionless
     e_rad = np.ones(N)                                     # 1 -> no wind (code sets lambda_DW = inf)
     e_rad[wind] = round_sig(e_rad_from_xi_psi(xi[wind], psi[wind]), SIG_FIGS["e_rad"])   # relation D
     if not np.all((e_rad[wind] > 0) & (e_rad[wind] < 1)):
@@ -415,22 +462,14 @@ def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX, R0_r
     xi_eff = np.where(wind, xi, 0.0)
     fM_eff = np.where(wind, f_M, 0.0)
     Mdot0 = (psi + 1 + 2 * xi_eff) / (psi + 1) * M0 / (2 * t_acc * 1e6 * (1 + fM_eff))   # Msun / yr
-
-    # ---- 4: grid edges (2026-10-29: r_min from the stellar radius ONLY, R*^(12/7) anchored at 1 Msun;
-    # was the full Konigl R_T with M*, R*, Mdot0, B*, beta) ----
-    rmin, r_Rstar, flag_rmin_floor, flag_rmin_cap = rmin_from_Rstar(Rstar)   # au (rmin 4 sf, same as R0)
-    # (2026-10-28) NOT guaranteed any more with the fixed 0.1 au cap (see module docstring, points 4-5):
-    # stop rather than run a disc whose grid starts outside its own characteristic radius
-    if np.any(bad_edge := rmin > R0):
-        raise ValueError(f"{int(bad_edge.sum())} disc(s) with r_min > R0 (ids {np.flatnonzero(bad_edge).tolist()}): "
-                         "decide how to treat them (clip R0 up to r_min, or redraw) before using this population")
-    # (2026-10-30) the restriction must hold for the values actually written (R0, r_min in au, same rounding)
-    if np.any(R0 / rmin < R0_rmin_min):
-        raise AssertionError(f"R0 / r_min < {R0_rmin_min} for ids {np.flatnonzero(R0 / rmin < R0_rmin_min).tolist()}")
-    rmax = rmax_from_R0(R0)                                # au, from the (possibly clipped) R0
+    # (2026-11-09) step 4 (grid edges) moved above step 7, since xi now needs r_min
 
     # wind loss the run can produce inside its own grid (r_min to R0); 0 without wind
+    # (Tabone et al. 2022, Eq. 22, p. 5, with r_in = r_min). (2026-11-09) Since xi is calibrated on r_min, this
+    # is f_M = 10^-0.6 for every wind disc (v4: below f_M wherever r_min > 0.03 au); checked, not assumed.
     fM_grid = np.where(wind, (R0 / rmin) ** xi_eff - 1, 0.0)
+    if wind.any() and not np.allclose(fM_grid[wind], f_M, rtol=1e-12, atol=0):
+        raise AssertionError("(R0/r_min)^xi - 1 != f_M for some wind discs: xi is not calibrated on r_min")
     f_offgrid = offgrid_mass_fraction(R0, rmax)
 
     cols = {
@@ -454,7 +493,10 @@ def draw_population(N, seed, alpha_SS, Mstar_scatter_dex=MSTAR_SCATTER_DEX, R0_r
         "R0_over_rmin": R0 / rmin, "flag_R0_rmin_redrawn": restarted.astype(int),
         "alpha_DW_Malanga": alpha_DW, "alpha_tot": alpha_tot, "alpha_SS": np.full(N, alpha_SS),
         "psi_raw": psi_raw, "psi_DW": psi, "psi_floored": floored.astype(int),
-        "xi": xi, "f_M": np.full(N, f_M), "f_M_grid_expected": fM_grid,
+        # xi = the ejection index THIS RUN targets (sets e_rad and lambda_DW), calibrated on r_min -> R0 since
+        # 2026-11-09; xi_Malanga_Rin (2026-11-09) = Malanga Eq. 6 with R_in = 0.03 au [dimensionless], comparison only
+        "xi": xi, "xi_Malanga_Rin": xi_Malanga,
+        "f_M": np.full(N, f_M), "f_M_grid_expected": fM_grid,
         "e_rad": e_rad, "lambda_DW": lam, "flag_lambda_lt_1p5": flag_lam.astype(int),
         "t_age_Myr": t_age, "t_acc0_Myr": t_acc, "Mdot0_est_Msun_yr": Mdot0,
         "flag_R0_clipped": clipped.astype(int),
@@ -531,7 +573,10 @@ def print_summary(cols, info):
               f"{p16:8.3g}/{p50:7.3g}/{p84:7.3g} {cols['flag_lambda_lt_1p5'][m].sum():11d} "
               f"{cols['flag_R0_clipped'][m].sum():11d}")
     print("\nDerived parameters [min / median / max]:")
-    for key in ["psi_DW", "xi", "e_rad", "t_acc0_Myr", "Mdot0_est_Msun_yr", "f_M_grid_expected",
+    # (2026-11-09) xi is calibrated on r_min -> R0; Malanga's own xi (0.03 au) is printed next to it
+    print("  (xi calibrated on r_min -> R0, so f_M_grid_expected = 10^-0.6 = 0.2512 for every wind disc; "
+          "xi_Malanga_Rin uses 0.03 au)")
+    for key in ["psi_DW", "xi", "xi_Malanga_Rin", "e_rad", "t_acc0_Myr", "Mdot0_est_Msun_yr", "f_M_grid_expected",
                 "rmin_Rstar_au", "rmin_au", "rmax_au"]:                  # (2026-10-29) was R_T_au
         v = cols[key]
         print(f"  {key:18s} {v.min():.4g} / {np.median(v):.4g} / {v.max():.4g}")
@@ -567,12 +612,14 @@ if __name__ == "__main__":
     ap.add_argument("--R0_rmin_min", type=float, default=R0_RMIN_MIN,
                     help=f"discard draws with R0 / r_min below this, new star and new R0 (default {R0_RMIN_MIN})")
     ap.add_argument("--out", type=str, default=None,
-                    help="output CSV path (default config/malanga/malanga_mstar_draws_Hof_N<N>_seed<seed>.csv); "
+                    help="output CSV path (default config/malanga/malanga_mstar_draws_Hof_N<N>_seed<seed>_xirmin.csv); "
                          "a .json with the same stem is written next to it")
     args = ap.parse_args()
 
+    # (2026-11-09) "_xirmin" suffix (xi calibrated on r_min, point 7), so this default never overwrites the committed
+    # v4 file malanga_mstar_draws_Hof_N500_seed1.csv, the record of what the v4 Nibi run was given
     out = args.out or os.path.join(here, "config", "malanga",
-                                   f"malanga_mstar_draws_Hof_N{args.N}_seed{args.seed}.csv")
+                                   f"malanga_mstar_draws_Hof_N{args.N}_seed{args.seed}_xirmin.csv")
     cols, info = draw_population(args.N, args.seed, args.alpha_SS, args.Mstar_scatter_dex, args.R0_rmin_min)
     write_csv_mstar(out, cols)
 
@@ -605,6 +652,9 @@ if __name__ == "__main__":
                         "scatter, range test) and a new z_R0 until it passes (flag_R0_rmin_redrawn); z_M0, z_alpha, "
                         "t_age are kept, M0 and alpha follow Eq. 7 at the new M*",
         "lambda_rule": "Balogh et al. (2026) Eq. 16 with e_rad from relation D (xi from Malanga Eq. 6)",
+        # (2026-11-09) inner radius of the xi calibration (module docstring, point 7)
+        "xi_rule": "xi = ln(1 + f_M) / ln(R0 / r_min), r_min = each disc's grid edge [au], so (R0/r_min)^xi - 1 = f_M "
+                   "on every grid (population v5; v3/v4 used 0.03 au, see git commit b292e53c)",
         "TABLE2": TABLE2, "M_NORM_Msun": M_NORM, "R_IN_au": R_IN,
         "T_FINAL_Myr": T_FINAL_MYR, "SIG_FIGS": {**SIG_FIGS, **SIG_FIGS_STAR}, **info,
     }
