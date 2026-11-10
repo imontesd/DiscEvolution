@@ -273,6 +273,22 @@ with one further addition -- see that file's own docstring.)
      keep their neighbours. To extract it:  re.search(r"_Ms([0-9.eE+-]+)_", name).group(1) [Msun].
      R*, Teff, r_min and r_max are NOT in the filename (R*, Teff follow from M*, the grid edges
      from Rd, in this workflow; read the HDF5 attrs). Runs differing only in them would collide.
+-(2026-11-10) PLANETS, v2 step 1 of 4: port of the planet set-up in run_model_student_v2.py.
+ Bitsch2015Model arguments fixed in build_planets() (behaviour unchanged when include_planets =
+ false, which is every run made so far):
+   * `planetesimal_acc=` (no longer a Bitsch2015Model argument -> TypeError in GasAccretion when
+     include_planets = true) replaced by planetesimal_acc_migrate / planetesimal_acc_insitu, read
+     from the new config keys planets.planetesimal_accretion_migrate / _insitu (bool). Configs that
+     only have the legacy planets.planetesimal_accretion still work: its value is used for both
+     (new helper _planetesimal_accretion_switches(), prints a NOTE when it does this);
+   * new optional config keys planets.f_plt [dimensionless, default 400] and planets.rho_core
+     [g cm^-3, default 5.5], passed to Bitsch2015Model (defaults = its own defaults);
+   * build_planets() takes a new 5th argument planetesimal_params and raises ValueError if
+     planetesimal accretion is on while planetesimal.active = false (that combination crashed
+     inside planet_formation.py on the first step: no Sigma_D[2] / R_planetesimal / e, i).
+ Still NOT ported (later steps): "SI"/"PA"/"TR" masses + delayed SI insertion + disc.d2g_SI (2),
+ planets-before-planetesimals and passing planets to PlanetesimalFormation (3), per-channel
+ accretion-rate output + t_form (4). run_model_Hof_dense.py is NOT changed.
 
 WHAT THIS RUNS
 --------------
@@ -596,7 +612,44 @@ def build_planetesimals(disc, planetesimal_params):
 # Step 7: planets
 # ============================================================================
 
-def build_planets(disc, planet_params, chemistry_params, wind_params):
+def _planetesimal_accretion_switches(planet_params):
+    """
+    (Hof, 2026-11-10, v2-planets step 1) Return the two planetesimal-accretion
+    switches (migrate, insitu) that the current Bitsch2015Model expects.
+
+    Bitsch2015Model (DiscEvolution/planet_formation.py) has TWO independent
+    planetesimal-accretion channels:
+        planetesimal_acc_migrate : accretion of planetesimals swept up while the
+                                   planet migrates (computeMdotMigration)
+        planetesimal_acc_insitu  : in-situ accretion, Fortier et al. (2013)
+                                   (computeMdotFortier)
+    At each step _growth_rates() uses whichever of the two is larger, per planet.
+
+    Config keys (same names as run_model_student_v2.py and
+    configs/20260905_balogh2026_SI.json):
+        planets.planetesimal_accretion_migrate : bool
+        planets.planetesimal_accretion_insitu  : bool
+    Backward compatibility: older Hof configs (baseline sweeps, grid/, popsynth/
+    malanga_mstar, ...) still carry the single legacy key
+        planets.planetesimal_accretion         : bool
+    If neither new key is present, the legacy value is used for BOTH channels
+    (the old single switch meant "planetesimal accretion on/off" in general).
+    Mixing is not allowed: if only one of the two new keys is given, the other
+    one raises KeyError, so a half-specified config can't silently fall back.
+    """
+    has_new = ("planetesimal_accretion_migrate" in planet_params
+               or "planetesimal_accretion_insitu" in planet_params)
+    if has_new:
+        return (bool(planet_params["planetesimal_accretion_migrate"]),
+                bool(planet_params["planetesimal_accretion_insitu"]))
+    legacy = bool(planet_params["planetesimal_accretion"])
+    print("NOTE: config uses the legacy key planets.planetesimal_accretion = "
+          f"{legacy}; applying it to both planetesimal_accretion_migrate and "
+          "planetesimal_accretion_insitu.", flush=True)
+    return legacy, legacy
+
+
+def build_planets(disc, planet_params, chemistry_params, wind_params, planetesimal_params):
     """
     Create the Planets container and the Bitsch2015Model that grows/
     migrates them, and drop each planet in at its starting radius and mass.
@@ -604,9 +657,47 @@ def build_planets(disc, planet_params, chemistry_params, wind_params):
     Planets start with a bare core and no envelope (X_env = 0); their core
     composition is read off the disc's ice abundance at the planet's
     starting radius.
+
+    (Hof, 2026-11-10, v2-planets step 1) Bitsch2015Model is now built with the
+    same arguments as run_model_student_v2.py::build_planets():
+      * planetesimal_acc_migrate / planetesimal_acc_insitu replace the old
+        single `planetesimal_acc=` keyword. That keyword no longer exists in
+        Bitsch2015Model.__init__, so it fell through **kwargs into
+        GasAccretion(...) and raised TypeError as soon as include_planets = true.
+      * f_plt    [dimensionless] embryo birth mass / planetesimal birth mass,
+                 used only for "SI"/"PA"/"TR" planet masses (wired in step 2).
+                 Config key planets.f_plt, default 400 (= Bitsch2015Model default).
+      * rho_core [g cm^-3] protoplanet core density, used by gas accretion
+                 (Piso & Youdin 2014 branch) and planetesimal capture radius.
+                 Config key planets.rho_core, default 5.5 (= Bitsch2015Model default).
+      Defaults are the Bitsch2015Model defaults, so configs without f_plt /
+      rho_core behave exactly as before.
+    New argument `planetesimal_params` (the config["planetesimal"] block) is
+    only used for the consistency check below.
     """
     if not planet_params['include_planets']:
         return None, None
+
+    # (Hof, 2026-11-10, v2-planets step 1) the two planetesimal-accretion switches
+    pla_acc_migrate, pla_acc_insitu = _planetesimal_accretion_switches(planet_params)
+
+    # (Hof, 2026-11-10, v2-planets step 1) consistency check. Both planetesimal-
+    # accretion channels read the planetesimal population that only exists when
+    # planetesimal FORMATION is on: disc.Sigma_D[2] (planetesimal surface density,
+    # 3rd dust band), disc.R_planetesimal, disc._planetesimal.e / .i. With
+    # planetesimal.active = false these don't exist and the run would crash on
+    # the first planet_model.integrate() with an IndexError/AttributeError deep in
+    # planet_formation.py. Fail here instead, with a message that says what to fix.
+    # (Checks the CONFIG, not disc._planetesimal, so it stays valid once step 3
+    #  builds planets before planetesimals.)
+    if (pla_acc_migrate or pla_acc_insitu) and not planetesimal_params['active']:
+        raise ValueError(
+            "planets: planetesimal accretion is on "
+            f"(migrate={pla_acc_migrate}, insitu={pla_acc_insitu}) but "
+            "planetesimal.active = false, so there are no planetesimals to accrete. "
+            "Either set planetesimal.active = true, or set both "
+            "planets.planetesimal_accretion_migrate and "
+            "planets.planetesimal_accretion_insitu to false.")
 
     if chemistry_params["on"]:
         Nchem = disc.chem.ice.data.shape[0]
@@ -615,12 +706,15 @@ def build_planets(disc, planet_params, chemistry_params, wind_params):
         planets = Planets(Nchem=0)
 
     planet_model = Bitsch2015Model(
-        disc, pb_gas_f=planet_params["pb_gas_f"],
+        disc, pb_gas_f=planet_params["pb_gas_f"],             # fraction of pebble flux accreted onto the envelope [dimensionless]
+        f_plt=planet_params.get("f_plt", 400),                 # (step 1) embryo / planetesimal birth-mass ratio [dimensionless]
         migrate=planet_params["migrate"],
         pebble_acc=planet_params["pebble_accretion"],
         gas_acc=planet_params["gas_accretion"],
-        planetesimal_acc=planet_params["planetesimal_accretion"],
+        planetesimal_acc_migrate=pla_acc_migrate,              # (step 1) replaces planetesimal_acc=
+        planetesimal_acc_insitu=pla_acc_insitu,                # (step 1) replaces planetesimal_acc=
         winds=wind_params["on"],
+        rho_core=planet_params.get("rho_core", 5.5),           # (step 1) core density [g cm^-3]
     )
     planet_model.set_disc(disc)
 
@@ -1231,7 +1325,10 @@ def run_model(config, cli_output_dir=None):
     build_planetesimals(disc, planetesimal_params)
 
     # ---- 7. planets ----
-    planets, planet_model = build_planets(disc, planet_params, chemistry_params, wind_params)
+    # (Hof, 2026-11-10, v2-planets step 1) planetesimal_params passed for the
+    # planetesimal-accretion consistency check inside build_planets()
+    planets, planet_model = build_planets(disc, planet_params, chemistry_params, wind_params,
+                                          planetesimal_params)
     nplanets = len(planet_params["Mp"])
 
     # ---- 8. output file (path already computed in the skip-check above) ----
