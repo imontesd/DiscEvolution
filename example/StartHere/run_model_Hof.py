@@ -287,7 +287,7 @@ with one further addition -- see that file's own docstring.)
      planetesimal accretion is on while planetesimal.active = false (that combination crashed
      inside planet_formation.py on the first step: no Sigma_D[2] / R_planetesimal / e, i).
  Still NOT ported (later steps): "SI"/"PA"/"TR" masses + delayed SI insertion + disc.d2g_SI (2, done below),
- planets-before-planetesimals and passing planets to PlanetesimalFormation (3), per-channel
+ planets-before-planetesimals and passing planets to PlanetesimalFormation (3, done below), per-channel
  accretion-rate output + t_form (4). run_model_Hof_dense.py is NOT changed.
 -(2026-11-10) PLANETS, v2 step 2 of 4: birth-mass strings and delayed "SI" insertion
  (from run_model_student_v2.py). Runs with include_planets = false are unchanged.
@@ -312,6 +312,16 @@ with one further addition -- see that file's own docstring.)
      datasets only for planets that were inserted (was: always len(planets.Mp));
    * chemistry on: X_env at insertion is the local gas abundance (insert_new_planet) instead of
      0; it multiplies M_env = 0, so only the first X_envs row differs.
+-(2026-11-10) PLANETS, v2 step 3 of 4: planets <-> planetesimals coupling (from
+ run_model_student_v2.py). Runs without planets, or without planetesimals, are unchanged.
+   * run_model(): planets are now built BEFORE planetesimals (pipeline steps 6 and 7 swapped);
+   * build_planetesimals(disc, planets, planetesimal_params): new `planets` argument, passed to
+     PlanetesimalFormation so embryo viscous stirring (VS_embryo, Kaufmann & Alibert 2023) acts.
+     Before, planets were never passed and VS_embryo silently gave 0. Planetesimal e and i feed
+     the planetesimal-accretion rates, so runs with planets AND planetesimals change;
+   * build_planetesimals() now also reads planetesimal.rho_pltsml [g cm^-3, default 2.0], drag,
+     VS_embryo, VS_pltsml, DF [bool, default True] and e_init, i_init [default 'eq'] (defaults =
+     PlanetesimalFormation defaults, i.e. what every earlier run used).
 
 WHAT THIS RUNS
 --------------
@@ -356,8 +366,9 @@ PIPELINE OVERVIEW
     4. Attach gas/dust transport (viscous+wind evolution, radial drift,
        turbulent diffusion) and wrap the disc in a DustGrowthTwoPop object.
     5. Seed the disc chemistry in equilibrium with the dust.
-    6. Turn on planetesimal formation (optional).
-    7. Place planets and attach the planet-growth model (optional).
+    6. Place planets and attach the planet-growth model (optional).
+    7. Turn on planetesimal formation (optional; after the planets so the
+       planets can stir the planetesimals -- order swapped 2026-11-10, v2-planets step 3).
     8. Open an HDF5 file and stream results to it as the simulation runs.
     9. Integrate forward in time, writing a snapshot at each requested
        output time.
@@ -628,24 +639,61 @@ def build_chemistry(disc, chemistry_params, d2g_target, N_cell):
 
 
 # ============================================================================
-# Step 6: planetesimals
+# Step 7: planetesimals (built after planets since 2026-11-10, v2-planets step 3)
 # ============================================================================
 
-def build_planetesimals(disc, planetesimal_params):
-    """Attach a PlanetesimalFormation object to the disc, if enabled."""
+def build_planetesimals(disc, planets, planetesimal_params):
+    """Attach a PlanetesimalFormation object to the disc, if enabled.
+
+    (Hof, 2026-11-10, v2-planets step 3) ported from
+    run_model_student_v2.py::build_planetesimals():
+
+      * new argument `planets` (the Planets container from build_planets(), or
+        None). PlanetesimalFormation keeps a reference to it for
+        VS_embryo = embryo-planetesimal viscous stirring of the planetesimal
+        eccentricity/inclination (Kaufmann & Alibert 2023;
+        PlanetesimalFormation.de2_dt_VS_embryo / di2_dt_VS_embryo). Before this
+        change `planets` was never passed, so VS_embryo (on by default) silently
+        returned 0 even with planets in the disc. It is the same container that
+        planet_model.integrate() updates and that "SI" planets are appended to,
+        so the stirring always sees the current planets.
+        Since e and i of the planetesimals enter the planetesimal-accretion
+        rates (P_coll in computeMdotFortier, capture radius / accretion
+        efficiency in computeMdotMigration), runs with planets AND planetesimals
+        will differ from before this change. Runs without planets are unchanged.
+
+      * the remaining PlanetesimalFormation settings are read from the config
+        block `planetesimal` (key -> argument, default; defaults are the
+        PlanetesimalFormation defaults, so a config without these keys builds
+        the same object as before):
+            rho_pltsml  [g cm^-3]  planetesimal bulk density         2.0
+            drag        bool       gas-drag damping of e, i          True
+            VS_embryo   bool       stirring by embryos (planets)     True
+            VS_pltsml   bool       planetesimal-planetesimal stirring True
+            DF          bool       dynamical friction                True
+            e_init, i_init  'eq' or number: initial e, i              'eq'
+        (trap_lifetime is not exposed, same as v2; default 100 orbits.)
+    """
     disc._planetesimal = None
     if planetesimal_params['active']:
         disc._planetesimal = PlanetesimalFormation(
-            disc,
-            d_planetesimal=planetesimal_params['diameter'],
+            disc, planets,                                           # (step 3) planets for VS_embryo
+            d_planetesimal=planetesimal_params['diameter'],          # [km] or "SI"
+            rho_pltsml=planetesimal_params.get('rho_pltsml', 2.0),   # (step 3) [g cm^-3]
             St_min=planetesimal_params['St_min'],
             St_max=planetesimal_params['St_max'],
             pla_eff=planetesimal_params['pla_eff'],
+            drag=planetesimal_params.get('drag', True),              # (step 3)
+            VS_embryo=planetesimal_params.get('VS_embryo', True),    # (step 3)
+            VS_pltsml=planetesimal_params.get('VS_pltsml', True),    # (step 3)
+            DF=planetesimal_params.get('DF', True),                  # (step 3)
+            e_init=planetesimal_params.get('e_init', 'eq'),          # (step 3)
+            i_init=planetesimal_params.get('i_init', 'eq'),          # (step 3)
         )
 
 
 # ============================================================================
-# Step 7: planets
+# Step 6: planets (built before planetesimals since 2026-11-10, v2-planets step 3)
 # ============================================================================
 
 def _planetesimal_accretion_switches(planet_params):
@@ -1479,10 +1527,14 @@ def run_model(config, cli_output_dir=None):
     chemistry, Natom, Nmol = build_chemistry(disc, chemistry_params, disc_params["d2g"],
                                               grid_params["nr"])
 
-    # ---- 6. planetesimals ----
-    build_planetesimals(disc, planetesimal_params)
+    # (Hof, 2026-11-10, v2-planets step 3) ORDER SWAPPED: planets (6) are now
+    # built BEFORE planetesimals (7), as in run_model_student_v2.py, because
+    # PlanetesimalFormation needs the Planets container for embryo viscous
+    # stirring (VS_embryo). Safe: nothing in build_planets() reads
+    # disc._planetesimal (DustyDisc initialises it to None), and its
+    # consistency checks read the planetesimal CONFIG, not the disc.
 
-    # ---- 7. planets ----
+    # ---- 6. planets ----
     # (Hof, 2026-11-10, v2-planets step 1) planetesimal_params passed for the
     # planetesimal-accretion consistency check inside build_planets()
     # (Hof, 2026-11-10, v2-planets step 2) build_planets() now also returns
@@ -1494,6 +1546,11 @@ def run_model(config, cli_output_dir=None):
     else:
         planets, planet_model, pending_SI = None, None, []
     nplanets = len(planet_params["Mp"])   # planets REQUESTED in the config (some may be inserted late, or never)
+
+    # ---- 7. planetesimals ----
+    # (Hof, 2026-11-10, v2-planets step 3) `planets` is passed in (None when
+    # include_planets = false) so the planets can stir the planetesimals.
+    build_planetesimals(disc, planets, planetesimal_params)
 
     # ---- 8. output file (path already computed in the skip-check above) ----
     h5f, groups = create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS)
