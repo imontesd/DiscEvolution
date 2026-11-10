@@ -288,7 +288,7 @@ with one further addition -- see that file's own docstring.)
      inside planet_formation.py on the first step: no Sigma_D[2] / R_planetesimal / e, i).
  Still NOT ported (later steps): "SI"/"PA"/"TR" masses + delayed SI insertion + disc.d2g_SI (2, done below),
  planets-before-planetesimals and passing planets to PlanetesimalFormation (3, done below), per-channel
- accretion-rate output + t_form (4). run_model_Hof_dense.py is NOT changed.
+ accretion-rate output + t_form (4, done below). run_model_Hof_dense.py is NOT changed.
 -(2026-11-10) PLANETS, v2 step 2 of 4: birth-mass strings and delayed "SI" insertion
  (from run_model_student_v2.py). Runs with include_planets = false are unchanged.
    * build_dust_growth_disc(): passes eps_SI = disc.d2g_SI [dimensionless, default 0.02 =
@@ -322,6 +322,23 @@ with one further addition -- see that file's own docstring.)
    * build_planetesimals() now also reads planetesimal.rho_pltsml [g cm^-3, default 2.0], drag,
      VS_embryo, VS_pltsml, DF [bool, default True] and e_init, i_init [default 'eq'] (defaults =
      PlanetesimalFormation defaults, i.e. what every earlier run used).
+-(2026-11-10) PLANETS, v2 step 4 of 4: per-channel planet accretion output (from
+ run_model_student_v2.py). No physics change; runs without planets are unchanged.
+   * new per-planet HDF5 groups, created only for ACTIVE channels (same conditions as v2), each
+     dataset <group>/<i> NaN-backfilled like the step-2 datasets, one row per row of t [yr]:
+         Mdot_pebble_core, Mdot_pebble_env  [Mearth/yr]  (pebble_accretion)
+         Mdot_planetesimal [Mearth/yr], M_iso_planetesimal [Mearth]  (planetesimal_accretion_insitu)
+         Mdot_migration [Mearth/yr]  (migrate and planetesimal_accretion_migrate)
+         Mdot_gas [Mearth/yr]  (gas_accretion)
+     Rates are Bitsch2015Model._growth_rates() x yr (code units Mearth per 1/Omega0 -> Mearth/yr),
+     taken from planet_model.rates (evaluated at the END of each step by integrate()), or evaluated
+     at the current state by the new _growth_rates_now() for the t = 0 row. Only the larger of
+     Mdot_planetesimal / Mdot_migration is nonzero per planet and row (the model uses one or the
+     other). Each group has attrs units and description. Existing M_iso (= v2's M_iso_pebble) and
+     M_transition keep their names. New helpers _planet_rate_outputs(), _growth_rates_now();
+     create_output_file() takes optional planet_model, write_planet_row() optional rates;
+   * new dataset t_form [yr] (attr units): insertion time per planet, in HDF5 planet-index order
+     (only if >= 1 planet was inserted).
 
 WHAT THIS RUNS
 --------------
@@ -1019,11 +1036,78 @@ def write_not_run_file(outfile, config, calib, run_start, gi=None):
         write_star_grid_attrs(h5f, config)                                  # (Hof, 2026-10-26) M*, R*, Teff, L*, r_min, r_max
 
 
-def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
+def _planet_rate_outputs(planet_model):
+    """
+    (Hof, 2026-11-10, v2-planets step 4) The extra per-planet outputs ported
+    from run_model_student_v2.py, restricted to the channels that are actually
+    switched on in this planet_model (same conditions as v2). Returns a list of
+        (HDF5 group name, source, units, description)
+    where `source` is a key of the dict returned by
+    Bitsch2015Model._growth_rates() (a rate in Mearth per code-time unit, which
+    write_planet_row() multiplies by yr = 2 pi to get Mearth/yr), or a callable
+    f(R [AU]) -> value for a non-rate quantity.
+
+    NOTE on the two planetesimal channels: Bitsch2015Model uses, per planet and
+    per step, ONLY the larger of the in-situ and migration rates; the other one
+    is stored as 0. So at any row, at most one of Mdot_planetesimal /
+    Mdot_migration is nonzero for a given planet.
+
+    Hof's existing M_iso (pebble isolation mass; v2 calls it M_iso_pebble) and
+    M_transition are unchanged and not repeated here.
+    """
+    if planet_model is None:
+        return []
+    out = []
+    if planet_model._peb_acc:
+        out += [("Mdot_pebble_core", "Mdot_pebble_core", "Mearth/yr",
+                 "pebble accretion rate onto the core = (1 - pb_gas_f) x pebble rate"),
+                ("Mdot_pebble_env", "Mdot_pebble_env", "Mearth/yr",
+                 "pebble accretion rate onto the envelope = pb_gas_f x pebble rate")]
+    pla = planet_model._pla_acc
+    if pla is not None and pla._Mdot_insitu:
+        out += [("Mdot_planetesimal", "Mdot_planetesimal_insitu", "Mearth/yr",
+                 "in-situ planetesimal accretion rate (Fortier et al. 2013); 0 when the "
+                 "migration channel is larger"),
+                ("M_iso_planetesimal", pla.M_iso_pltsml, "Mearth",
+                 "planetesimal isolation mass at the planet's radius (PlanetesimalAccretion.M_iso_pltsml)")]
+    if pla is not None and pla._Mdot_migrate and planet_model._migrate:
+        out += [("Mdot_migration", "Mdot_planetesimal_migration", "Mearth/yr",
+                 "planetesimal accretion rate while migrating (computeMdotMigration); 0 when "
+                 "the in-situ channel is larger")]
+    if planet_model._gas_acc:
+        out += [("Mdot_gas", "Mdot_gas", "Mearth/yr",
+                 "gas envelope accretion rate (Piso & Youdin 2014 / Machida et al. 2010, "
+                 "capped at f_max x local disc Mdot)")]
+    return out
+
+
+def _growth_rates_now(planet_model, planets, chemistry_on):
+    """
+    (Hof, 2026-11-10, v2-planets step 4; copy of run_model_student_v2.py's
+    helper) Evaluate Bitsch2015Model._growth_rates() at the CURRENT planet
+    state. Used when planet_model.rates is not available or not up to date
+    (t = 0 row, before any integrate() call). Same M_Z / M_HHe split as
+    Bitsch2015Model.integrate(): M_Z = heavy-element mass [Mearth] (sum of the
+    tracked species in core + envelope when chemistry is on, else M_core);
+    M_HHe = the rest [Mearth].
+    """
+    if chemistry_on:
+        M_Z = (planets.X_core * planets.M_core).sum(0) + (planets.X_env * planets.M_env).sum(0)
+        M_HHe = planets.M_core + planets.M_env - M_Z
+    else:
+        M_Z, M_HHe = planets.M_core, planets.M_env
+    return planet_model._growth_rates(planets.R, planets.M_core, planets.M_env, M_Z, M_HHe)
+
+
+def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS, planet_model=None):
     """
     Create the HDF5 file and every dataset/group it will need, but do not
     write any data yet (see write_planet_row / write_disc_snapshot below).
     Returns the open h5py.File plus a dict of the per-planet group handles.
+
+    (Hof, 2026-11-10, v2-planets step 4) new optional argument planet_model:
+    decides which per-channel accretion-rate groups are created (only the
+    active channels; see _planet_rate_outputs()). None -> no rate groups.
     """
     planet_params = config['planets']
     chemistry_params = config['chemistry']
@@ -1051,6 +1135,13 @@ def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
         for name in ("Mcs", "Mes", "Rp", "disk_Mdot_p", "X_cores", "X_envs",
                      "ice_lines", "M_transition", "M_iso"):
             groups[name] = h5f.create_group(name)
+        # (Hof, 2026-11-10, v2-planets step 4) one extra group per ACTIVE
+        # accretion channel (see _planet_rate_outputs()); each group carries
+        # its units and meaning as attributes, for traceability.
+        for name, _key, units, desc in _planet_rate_outputs(planet_model):
+            groups[name] = h5f.create_group(name)
+            groups[name].attrs["units"] = units
+            groups[name].attrs["description"] = desc
 
     # ---- grid (written once) ----
     h5f.create_dataset("R", data=grid.Rc)
@@ -1125,6 +1216,13 @@ def create_planet_datasets(h5f, groups, planets, chemistry_params, Nmol, ip):
         _make_backfilled(groups[name], ip, n_backfill)
     _make_backfilled(groups["ice_lines"], ip, n_backfill, ncol=Nmol)
 
+    # (Hof, 2026-11-10, v2-planets step 4) per-channel rate datasets, only for
+    # the groups create_output_file() made (= active channels), e.g.
+    # Mdot_gas/<ip> [Mearth/yr]; same NaN backfill as above.
+    for name in _RATE_GROUP_NAMES:
+        if name in groups:
+            _make_backfilled(groups[name], ip, n_backfill)
+
     # (as before) a subgroup per planet is always created; it only holds
     # datasets (one per ice species) when chemistry is on
     pgrp_c = groups["X_cores"].create_group(str(ip))
@@ -1141,10 +1239,38 @@ def create_planet_datasets(h5f, groups, planets, chemistry_params, Nmol, ip):
     a["t_form_yr"] = float(planets.t_form[ip] / yr)
 
 
+# (Hof, 2026-11-10, v2-planets step 4) every group name _planet_rate_outputs()
+# can return; used by create_planet_datasets() to find the rate groups present.
+_RATE_GROUP_NAMES = ("Mdot_pebble_core", "Mdot_pebble_env", "Mdot_planetesimal",
+                     "M_iso_planetesimal", "Mdot_migration", "Mdot_gas")
+
+
 def write_planet_row(h5f, groups, planets, planet_model, disc, grid, disk_Mdot,
-                      chemistry_params, dust_growth_params):
-    """Append one row to every per-planet dataset (called every 5 steps)."""
+                      chemistry_params, dust_growth_params, rates=None):
+    """Append one row to every per-planet dataset (called every 5 steps).
+
+    (Hof, 2026-11-10, v2-planets step 4) new optional argument `rates`: the
+    dict from Bitsch2015Model._growth_rates(). In the time loop this is
+    planet_model.rates, which integrate() evaluates at the END of the step
+    just taken (the new R, M_core, M_env). If it is None or doesn't cover every
+    current planet (t = 0 row, before any integrate()), the rates are evaluated
+    now with _growth_rates_now(). Rates are in Mearth per code-time unit and
+    are written x yr (= 2 pi) -> Mearth/yr.
+    """
+    rate_outputs = _planet_rate_outputs(planet_model)
+    if rate_outputs and planets.N > 0:
+        if rates is None or len(rates["Rdot"]) != planets.N:
+            rates = _growth_rates_now(planet_model, planets, chemistry_params["on"])
+
     for ip, planet in enumerate(planets):
+        # (step 4) per-channel rates [Mearth/yr] and planetesimal isolation mass [Mearth]
+        for name, source, _units, _desc in rate_outputs:
+            if callable(source):
+                value = float(np.squeeze(source(planet.R)))           # e.g. M_iso_pltsml(R) [Mearth]
+            else:
+                value = float(rates[source][ip]) * yr                  # Mearth/code-time -> Mearth/yr
+            grow_and_set(groups[name][str(ip)], value)
+
         grow_and_set(groups["Mcs"][str(ip)], planet.M_core.copy())
         grow_and_set(groups["Mes"][str(ip)], planet.M_env.copy())
         grow_and_set(groups["Rp"][str(ip)], planet.R.copy())
@@ -1553,7 +1679,8 @@ def run_model(config, cli_output_dir=None):
     build_planetesimals(disc, planets, planetesimal_params)
 
     # ---- 8. output file (path already computed in the skip-check above) ----
-    h5f, groups = create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS)
+    h5f, groups = create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS,
+                                     planet_model=planet_model)   # (step 4) for the rate groups
     # (Hof, 2026-11-10, v2-planets step 2) per-planet datasets for the planets
     # that already exist at t = 0 (numeric / "PA" / "TR" masses); "SI" planets
     # get theirs when they are inserted. Nothing to backfill yet (h5f["t"] is empty).
@@ -1759,8 +1886,11 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
                 grow_and_set(h5f["Tc"], disc.T[0])
                 grow_and_set(h5f["Sigc"], disc.Sigma[0])
                 if planets is not None:
+                    # (step 4) rates from the integrate() call of this step (end-of-step
+                    # state); absent if no planet existed yet -> recomputed inside
                     write_planet_row(h5f, groups, planets, planet_model, disc, grid, disk_Mdot,
-                                      chemistry_params, dust_growth_params)
+                                      chemistry_params, dust_growth_params,
+                                      rates=getattr(planet_model, "rates", None))
 
         # --- once per requested snapshot time: full disc-profile row ---
         write_disc_snapshot(h5f, disc, config, t, Natom, Nmol)
@@ -1772,6 +1902,13 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
     #       planets whose radius never had Sigma_planetesimal > 0 before t_final
     #       (empty array if all were inserted). They have NO per-planet datasets.
     if planets is not None:
+        # (Hof, 2026-11-10, v2-planets step 4) t_form [yr]: insertion time of each
+        # planet, in HDF5 planet-index (insertion) order, as in run_model_student_v2.py.
+        # Same numbers as the Rp/<i>.attrs["t_form_yr"] added in step 2, as one
+        # array. Only written when at least one planet was inserted (as in v2).
+        if planets.N > 0:
+            d = h5f.create_dataset("t_form", data=np.asarray(planets.t_form, dtype="f8") / yr)
+            d.attrs["units"] = "yr"
         never = np.array([ic for ic, *_ in pending_SI], dtype=int)
         h5f.attrs["n_planets_inserted"] = int(planets.N)
         h5f.attrs["planets_never_inserted_config_index"] = never
