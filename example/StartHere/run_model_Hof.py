@@ -273,6 +273,72 @@ with one further addition -- see that file's own docstring.)
      keep their neighbours. To extract it:  re.search(r"_Ms([0-9.eE+-]+)_", name).group(1) [Msun].
      R*, Teff, r_min and r_max are NOT in the filename (R*, Teff follow from M*, the grid edges
      from Rd, in this workflow; read the HDF5 attrs). Runs differing only in them would collide.
+-(2026-11-10) PLANETS, v2 step 1 of 4: port of the planet set-up in run_model_student_v2.py.
+ Bitsch2015Model arguments fixed in build_planets() (behaviour unchanged when include_planets =
+ false, which is every run made so far):
+   * `planetesimal_acc=` (no longer a Bitsch2015Model argument -> TypeError in GasAccretion when
+     include_planets = true) replaced by planetesimal_acc_migrate / planetesimal_acc_insitu, read
+     from the new config keys planets.planetesimal_accretion_migrate / _insitu (bool). Configs that
+     only have the legacy planets.planetesimal_accretion still work: its value is used for both
+     (new helper _planetesimal_accretion_switches(), prints a NOTE when it does this);
+   * new optional config keys planets.f_plt [dimensionless, default 400] and planets.rho_core
+     [g cm^-3, default 5.5], passed to Bitsch2015Model (defaults = its own defaults);
+   * build_planets() takes a new 5th argument planetesimal_params and raises ValueError if
+     planetesimal accretion is on while planetesimal.active = false (that combination crashed
+     inside planet_formation.py on the first step: no Sigma_D[2] / R_planetesimal / e, i).
+ Still NOT ported (later steps): "SI"/"PA"/"TR" masses + delayed SI insertion + disc.d2g_SI (2, done below),
+ planets-before-planetesimals and passing planets to PlanetesimalFormation (3, done below), per-channel
+ accretion-rate output + t_form (4, done below). run_model_Hof_dense.py is NOT changed.
+-(2026-11-10) PLANETS, v2 step 2 of 4: birth-mass strings and delayed "SI" insertion
+ (from run_model_student_v2.py). Runs with include_planets = false are unchanged.
+   * build_dust_growth_disc(): passes eps_SI = disc.d2g_SI [dimensionless, default 0.02 =
+     the DustGrowthTwoPop default] -> disc.dust_frac_SI, used by "SI" planet masses and by
+     planetesimal.diameter = "SI";
+   * build_planets(): planets are inserted with planet_model.insert_new_planet() instead of
+     planets.add_planet(), so planets.Mp may be a number [Mearth] or "PA" / "TR" (Lorek &
+     Johansen birth-mass models, inserted at set-up) or "SI" (f_plt x Liu et al. 2020 Eq. 14).
+     "SI" planets are NOT inserted at set-up: build_planets() now returns
+     (planets, planet_model, pending_SI), and the new _insert_pending_SI_planets(), called in
+     _integrate() right after the planetesimal update, inserts each one at the first step where
+     Sigma_planetesimal(R) = disc.Sigma_D[2] > 0 [g cm^-2]; its t_form is that time. ValueError
+     at set-up if Mp has "SI" but planetesimal.active = false (they could never be inserted).
+     implant_time is still not a delay for numeric / "PA" / "TR" planets;
+   * HDF5: create_output_file() only creates the per-planet GROUPS; the new
+     create_planet_datasets() creates each planet's datasets when it is inserted, NaN-backfilled
+     (new _make_backfilled()) so row k still matches t[k] [yr]. Same dataset names/shapes as
+     before. Planet index i in the file = insertion order (not config order); new attrs on
+     Rp/<i>: config_index, R_insert_au [AU], M_insert_Mearth [Mearth], t_form_yr [yr]. New file
+     attrs: n_planets_inserted, planets_never_inserted_config_index. A file now has per-planet
+     datasets only for planets that were inserted (was: always len(planets.Mp));
+   * chemistry on: X_env at insertion is the local gas abundance (insert_new_planet) instead of
+     0; it multiplies M_env = 0, so only the first X_envs row differs.
+-(2026-11-10) PLANETS, v2 step 3 of 4: planets <-> planetesimals coupling (from
+ run_model_student_v2.py). Runs without planets, or without planetesimals, are unchanged.
+   * run_model(): planets are now built BEFORE planetesimals (pipeline steps 6 and 7 swapped);
+   * build_planetesimals(disc, planets, planetesimal_params): new `planets` argument, passed to
+     PlanetesimalFormation so embryo viscous stirring (VS_embryo, Kaufmann & Alibert 2023) acts.
+     Before, planets were never passed and VS_embryo silently gave 0. Planetesimal e and i feed
+     the planetesimal-accretion rates, so runs with planets AND planetesimals change;
+   * build_planetesimals() now also reads planetesimal.rho_pltsml [g cm^-3, default 2.0], drag,
+     VS_embryo, VS_pltsml, DF [bool, default True] and e_init, i_init [default 'eq'] (defaults =
+     PlanetesimalFormation defaults, i.e. what every earlier run used).
+-(2026-11-10) PLANETS, v2 step 4 of 4: per-channel planet accretion output (from
+ run_model_student_v2.py). No physics change; runs without planets are unchanged.
+   * new per-planet HDF5 groups, created only for ACTIVE channels (same conditions as v2), each
+     dataset <group>/<i> NaN-backfilled like the step-2 datasets, one row per row of t [yr]:
+         Mdot_pebble_core, Mdot_pebble_env  [Mearth/yr]  (pebble_accretion)
+         Mdot_planetesimal [Mearth/yr], M_iso_planetesimal [Mearth]  (planetesimal_accretion_insitu)
+         Mdot_migration [Mearth/yr]  (migrate and planetesimal_accretion_migrate)
+         Mdot_gas [Mearth/yr]  (gas_accretion)
+     Rates are Bitsch2015Model._growth_rates() x yr (code units Mearth per 1/Omega0 -> Mearth/yr),
+     taken from planet_model.rates (evaluated at the END of each step by integrate()), or evaluated
+     at the current state by the new _growth_rates_now() for the t = 0 row. Only the larger of
+     Mdot_planetesimal / Mdot_migration is nonzero per planet and row (the model uses one or the
+     other). Each group has attrs units and description. Existing M_iso (= v2's M_iso_pebble) and
+     M_transition keep their names. New helpers _planet_rate_outputs(), _growth_rates_now();
+     create_output_file() takes optional planet_model, write_planet_row() optional rates;
+   * new dataset t_form [yr] (attr units): insertion time per planet, in HDF5 planet-index order
+     (only if >= 1 planet was inserted).
 
 WHAT THIS RUNS
 --------------
@@ -317,8 +383,9 @@ PIPELINE OVERVIEW
     4. Attach gas/dust transport (viscous+wind evolution, radial drift,
        turbulent diffusion) and wrap the disc in a DustGrowthTwoPop object.
     5. Seed the disc chemistry in equilibrium with the dust.
-    6. Turn on planetesimal formation (optional).
-    7. Place planets and attach the planet-growth model (optional).
+    6. Place planets and attach the planet-growth model (optional).
+    7. Turn on planetesimal formation (optional; after the planets so the
+       planets can stir the planetesimals -- order swapped 2026-11-10, v2-planets step 3).
     8. Open an HDF5 file and stream results to it as the simulation runs.
     9. Integrate forward in time, writing a snapshot at each requested
        output time.
@@ -505,9 +572,22 @@ def build_transport(transport_params, wind_params, disc_params, dust_growth_para
 
 
 def build_dust_growth_disc(grid, star, eos, Sigma, disc_params, dust_growth_params, gas):
-    """Wrap the bare (grid, star, eos, Sigma) disc in dust-growth physics."""
+    """Wrap the bare (grid, star, eos, Sigma) disc in dust-growth physics.
+
+    (Hof, 2026-11-10, v2-planets step 2) eps_SI is now passed, as in
+    run_model_student_v2.py. eps_SI [dimensionless] is the dust-to-gas ratio Z
+    assumed for streaming-instability (SI) birth masses; it is stored as
+    disc.dust_frac_SI and read by
+        * Bitsch2015Model.M_birth_embryo()    -> planet core mass when planets.Mp = "SI"
+                                                 (Liu et al. 2020 Eq. 14, x f_plt)
+        * PlanetesimalFormation.M_birth_pltsml() -> planetesimal size when
+                                                 planetesimal.diameter = "SI"
+    Config key disc.d2g_SI, default 0.02 = the DustGrowthTwoPop default, so a
+    config without d2g_SI gives exactly the same disc as before this change.
+    """
     return DustGrowthTwoPop(
         grid, star, eos, disc_params['d2g'], Sigma=Sigma,
+        eps_SI=disc_params.get('d2g_SI', 0.02),   # (step 2) SI dust fraction [dimensionless]
         feedback=dust_growth_params["feedback"], Sc=disc_params["Sc"],
         f_ice=dust_growth_params['f_ice'], thresh=dust_growth_params['thresh'],
         uf_0=dust_growth_params["uf_0"], uf_ice=dust_growth_params["uf_ice"], gas=gas,
@@ -576,27 +656,101 @@ def build_chemistry(disc, chemistry_params, d2g_target, N_cell):
 
 
 # ============================================================================
-# Step 6: planetesimals
+# Step 7: planetesimals (built after planets since 2026-11-10, v2-planets step 3)
 # ============================================================================
 
-def build_planetesimals(disc, planetesimal_params):
-    """Attach a PlanetesimalFormation object to the disc, if enabled."""
+def build_planetesimals(disc, planets, planetesimal_params):
+    """Attach a PlanetesimalFormation object to the disc, if enabled.
+
+    (Hof, 2026-11-10, v2-planets step 3) ported from
+    run_model_student_v2.py::build_planetesimals():
+
+      * new argument `planets` (the Planets container from build_planets(), or
+        None). PlanetesimalFormation keeps a reference to it for
+        VS_embryo = embryo-planetesimal viscous stirring of the planetesimal
+        eccentricity/inclination (Kaufmann & Alibert 2023;
+        PlanetesimalFormation.de2_dt_VS_embryo / di2_dt_VS_embryo). Before this
+        change `planets` was never passed, so VS_embryo (on by default) silently
+        returned 0 even with planets in the disc. It is the same container that
+        planet_model.integrate() updates and that "SI" planets are appended to,
+        so the stirring always sees the current planets.
+        Since e and i of the planetesimals enter the planetesimal-accretion
+        rates (P_coll in computeMdotFortier, capture radius / accretion
+        efficiency in computeMdotMigration), runs with planets AND planetesimals
+        will differ from before this change. Runs without planets are unchanged.
+
+      * the remaining PlanetesimalFormation settings are read from the config
+        block `planetesimal` (key -> argument, default; defaults are the
+        PlanetesimalFormation defaults, so a config without these keys builds
+        the same object as before):
+            rho_pltsml  [g cm^-3]  planetesimal bulk density         2.0
+            drag        bool       gas-drag damping of e, i          True
+            VS_embryo   bool       stirring by embryos (planets)     True
+            VS_pltsml   bool       planetesimal-planetesimal stirring True
+            DF          bool       dynamical friction                True
+            e_init, i_init  'eq' or number: initial e, i              'eq'
+        (trap_lifetime is not exposed, same as v2; default 100 orbits.)
+    """
     disc._planetesimal = None
     if planetesimal_params['active']:
         disc._planetesimal = PlanetesimalFormation(
-            disc,
-            d_planetesimal=planetesimal_params['diameter'],
+            disc, planets,                                           # (step 3) planets for VS_embryo
+            d_planetesimal=planetesimal_params['diameter'],          # [km] or "SI"
+            rho_pltsml=planetesimal_params.get('rho_pltsml', 2.0),   # (step 3) [g cm^-3]
             St_min=planetesimal_params['St_min'],
             St_max=planetesimal_params['St_max'],
             pla_eff=planetesimal_params['pla_eff'],
+            drag=planetesimal_params.get('drag', True),              # (step 3)
+            VS_embryo=planetesimal_params.get('VS_embryo', True),    # (step 3)
+            VS_pltsml=planetesimal_params.get('VS_pltsml', True),    # (step 3)
+            DF=planetesimal_params.get('DF', True),                  # (step 3)
+            e_init=planetesimal_params.get('e_init', 'eq'),          # (step 3)
+            i_init=planetesimal_params.get('i_init', 'eq'),          # (step 3)
         )
 
 
 # ============================================================================
-# Step 7: planets
+# Step 6: planets (built before planetesimals since 2026-11-10, v2-planets step 3)
 # ============================================================================
 
-def build_planets(disc, planet_params, chemistry_params, wind_params):
+def _planetesimal_accretion_switches(planet_params):
+    """
+    (Hof, 2026-11-10, v2-planets step 1) Return the two planetesimal-accretion
+    switches (migrate, insitu) that the current Bitsch2015Model expects.
+
+    Bitsch2015Model (DiscEvolution/planet_formation.py) has TWO independent
+    planetesimal-accretion channels:
+        planetesimal_acc_migrate : accretion of planetesimals swept up while the
+                                   planet migrates (computeMdotMigration)
+        planetesimal_acc_insitu  : in-situ accretion, Fortier et al. (2013)
+                                   (computeMdotFortier)
+    At each step _growth_rates() uses whichever of the two is larger, per planet.
+
+    Config keys (same names as run_model_student_v2.py and
+    configs/20260905_balogh2026_SI.json):
+        planets.planetesimal_accretion_migrate : bool
+        planets.planetesimal_accretion_insitu  : bool
+    Backward compatibility: older Hof configs (baseline sweeps, grid/, popsynth/
+    malanga_mstar, ...) still carry the single legacy key
+        planets.planetesimal_accretion         : bool
+    If neither new key is present, the legacy value is used for BOTH channels
+    (the old single switch meant "planetesimal accretion on/off" in general).
+    Mixing is not allowed: if only one of the two new keys is given, the other
+    one raises KeyError, so a half-specified config can't silently fall back.
+    """
+    has_new = ("planetesimal_accretion_migrate" in planet_params
+               or "planetesimal_accretion_insitu" in planet_params)
+    if has_new:
+        return (bool(planet_params["planetesimal_accretion_migrate"]),
+                bool(planet_params["planetesimal_accretion_insitu"]))
+    legacy = bool(planet_params["planetesimal_accretion"])
+    print("NOTE: config uses the legacy key planets.planetesimal_accretion = "
+          f"{legacy}; applying it to both planetesimal_accretion_migrate and "
+          "planetesimal_accretion_insitu.", flush=True)
+    return legacy, legacy
+
+
+def build_planets(disc, planet_params, chemistry_params, wind_params, planetesimal_params):
     """
     Create the Planets container and the Bitsch2015Model that grows/
     migrates them, and drop each planet in at its starting radius and mass.
@@ -604,9 +758,47 @@ def build_planets(disc, planet_params, chemistry_params, wind_params):
     Planets start with a bare core and no envelope (X_env = 0); their core
     composition is read off the disc's ice abundance at the planet's
     starting radius.
+
+    (Hof, 2026-11-10, v2-planets step 1) Bitsch2015Model is now built with the
+    same arguments as run_model_student_v2.py::build_planets():
+      * planetesimal_acc_migrate / planetesimal_acc_insitu replace the old
+        single `planetesimal_acc=` keyword. That keyword no longer exists in
+        Bitsch2015Model.__init__, so it fell through **kwargs into
+        GasAccretion(...) and raised TypeError as soon as include_planets = true.
+      * f_plt    [dimensionless] embryo birth mass / planetesimal birth mass,
+                 used only for "SI"/"PA"/"TR" planet masses (wired in step 2).
+                 Config key planets.f_plt, default 400 (= Bitsch2015Model default).
+      * rho_core [g cm^-3] protoplanet core density, used by gas accretion
+                 (Piso & Youdin 2014 branch) and planetesimal capture radius.
+                 Config key planets.rho_core, default 5.5 (= Bitsch2015Model default).
+      Defaults are the Bitsch2015Model defaults, so configs without f_plt /
+      rho_core behave exactly as before.
+    New argument `planetesimal_params` (the config["planetesimal"] block) is
+    only used for the consistency check below.
     """
     if not planet_params['include_planets']:
         return None, None
+
+    # (Hof, 2026-11-10, v2-planets step 1) the two planetesimal-accretion switches
+    pla_acc_migrate, pla_acc_insitu = _planetesimal_accretion_switches(planet_params)
+
+    # (Hof, 2026-11-10, v2-planets step 1) consistency check. Both planetesimal-
+    # accretion channels read the planetesimal population that only exists when
+    # planetesimal FORMATION is on: disc.Sigma_D[2] (planetesimal surface density,
+    # 3rd dust band), disc.R_planetesimal, disc._planetesimal.e / .i. With
+    # planetesimal.active = false these don't exist and the run would crash on
+    # the first planet_model.integrate() with an IndexError/AttributeError deep in
+    # planet_formation.py. Fail here instead, with a message that says what to fix.
+    # (Checks the CONFIG, not disc._planetesimal, so it stays valid once step 3
+    #  builds planets before planetesimals.)
+    if (pla_acc_migrate or pla_acc_insitu) and not planetesimal_params['active']:
+        raise ValueError(
+            "planets: planetesimal accretion is on "
+            f"(migrate={pla_acc_migrate}, insitu={pla_acc_insitu}) but "
+            "planetesimal.active = false, so there are no planetesimals to accrete. "
+            "Either set planetesimal.active = true, or set both "
+            "planets.planetesimal_accretion_migrate and "
+            "planets.planetesimal_accretion_insitu to false.")
 
     if chemistry_params["on"]:
         Nchem = disc.chem.ice.data.shape[0]
@@ -615,28 +807,111 @@ def build_planets(disc, planet_params, chemistry_params, wind_params):
         planets = Planets(Nchem=0)
 
     planet_model = Bitsch2015Model(
-        disc, pb_gas_f=planet_params["pb_gas_f"],
+        disc, pb_gas_f=planet_params["pb_gas_f"],             # fraction of pebble flux accreted onto the envelope [dimensionless]
+        f_plt=planet_params.get("f_plt", 400),                 # (step 1) embryo / planetesimal birth-mass ratio [dimensionless]
         migrate=planet_params["migrate"],
         pebble_acc=planet_params["pebble_accretion"],
         gas_acc=planet_params["gas_accretion"],
-        planetesimal_acc=planet_params["planetesimal_accretion"],
+        planetesimal_acc_migrate=pla_acc_migrate,              # (step 1) replaces planetesimal_acc=
+        planetesimal_acc_insitu=pla_acc_insitu,                # (step 1) replaces planetesimal_acc=
         winds=wind_params["on"],
+        rho_core=planet_params.get("rho_core", 5.5),           # (step 1) core density [g cm^-3]
     )
     planet_model.set_disc(disc)
 
-    for Rp_i, Mp_i, t_implant in zip(planet_params['Rp'], planet_params['Mp'],
-                                      planet_params['implant_time']):
-        if chemistry_params["on"]:
-            X_core = np.array([
-                disc.interp(Rp_i, ice_spec) / disc.interp(Rp_i, disc.dust_frac[:2].sum(0))
-                for ice_spec in disc.chem.ice.data
-            ])
-            X_env = np.zeros_like(X_core)
-            planets.add_planet(t_implant, Rp_i, Mp_i, 0, X_core, X_env)
-        else:
-            planets.add_planet(t_implant, Rp_i, Mp_i, 0)
+    # ------------------------------------------------------------------
+    # (Hof, 2026-11-10, v2-planets step 2) planet insertion, ported from
+    # run_model_student_v2.py::build_planets().
+    #
+    # planets.Mp[i] may now be
+    #   * a number   -> initial core mass [Mearth]   (as before)
+    #   * "PA"       -> pebble-accretion onset mass, Lorek & Johansen     (M_on_Lorek)
+    #   * "TR"       -> Hill/Bondi transition mass, Lorek & Johansen      (M_tr_Lorek)
+    #   * "SI"       -> streaming-instability embryo birth mass,
+    #                   f_plt x Liu et al. (2020) Eq. 14                  (M_birth_embryo)
+    # Numbers, "PA" and "TR" are inserted NOW (t = implant_time, as before),
+    # through planet_model.insert_new_planet(), which turns the string into a
+    # mass, starts the planet with M_env = 0 [Mearth], and (chemistry on) sets
+    # X_core = local ice / local dust (same formula as the old add_planet code
+    # here) and X_env = local gas abundance (was 0; it multiplies M_env = 0, so
+    # the planet's envelope composition is unaffected; only the t = 0 X_envs
+    # output row differs).
+    #
+    # "SI" planets need a planetesimal population to exist at their radius,
+    # which it doesn't at t = 0. They are returned in `pending_SI` and inserted
+    # later by _insert_pending_SI_planets() (called inside the time loop right
+    # after the planetesimal update), at the first step where
+    # Sigma_planetesimal(R) > 0. Their t_form is that insertion time, not
+    # implant_time.
+    #
+    # NOTE: implant_time is still NOT a delay for numeric/"PA"/"TR" planets:
+    # it is only stored as planets.t_form; Bitsch2015Model.integrate() grows
+    # every inserted planet from the moment it is inserted (same as before).
+    #
+    # Each entry of pending_SI is (config_index, t_impl, R_impl [AU], M_impl),
+    # where config_index = position of that planet in planets.Rp / planets.Mp.
+    # Inserted planets are numbered in INSERTION order (numeric/"PA"/"TR" first,
+    # then "SI" as they appear), so HDF5 index i is not necessarily config
+    # index i; the per-planet output stores config_index as an attribute (see
+    # create_planet_datasets()).
+    # ------------------------------------------------------------------
+    is_SI = [str(M).upper() == "SI" for M in planet_params['Mp']]
+    if any(is_SI) and not planetesimal_params['active']:
+        # Without planetesimal formation Sigma_D[2] never exists, so "SI"
+        # planets would never be inserted. Fail now instead of running a disc
+        # with silently missing planets.
+        raise ValueError(
+            "planets: planets.Mp contains \"SI\" (insert once planetesimals form) "
+            "but planetesimal.active = false, so they could never be inserted. "
+            "Set planetesimal.active = true or give those planets numeric masses [Mearth].")
 
-    return planets, planet_model
+    pending_SI = []
+    config_index = []   # config_index[i] = position in planets.Rp/Mp of inserted planet i
+    for ic, (R_impl, M_impl, t_impl) in enumerate(zip(planet_params['Rp'], planet_params['Mp'],
+                                                      planet_params['implant_time'])):
+        if is_SI[ic]:
+            pending_SI.append((ic, t_impl, R_impl, M_impl))
+        else:
+            planet_model.insert_new_planet(t_impl, R_impl, M_impl, planets)
+            config_index.append(ic)
+
+    # (step 2) remembered on the Planets container so the output code can label
+    # each planet with where it came from in the config (plain Python list;
+    # Planets itself doesn't know about it).
+    planets.config_index = config_index
+
+    return planets, planet_model, pending_SI
+
+
+def _insert_pending_SI_planets(t, disc, planets, planet_model, pending_SI,
+                               h5f, groups, chemistry_params, Nmol):
+    """
+    (Hof, 2026-11-10, v2-planets step 2) Insert every pending "SI" planet whose
+    radius now has a nonzero planetesimal surface density, and create its HDF5
+    datasets (NaN-backfilled so they line up with h5f["t"]).
+
+    Same rule as run_model_student_v2.py::_integrate():
+        insert at R_impl when  disc.interp(R_impl, disc.Sigma_D[2]) > 0
+    where disc.Sigma_D[2] [g cm^-2] is the planetesimal band (3rd dust
+    population, created by PlanetesimalFormation). The core mass is set by
+    planet_model.insert_new_planet(t, R, "SI", planets) = f_plt x M_birth
+    (Liu et al. 2020 Eq. 14) [Mearth], evaluated with the disc AT THIS TIME.
+
+    args:
+        t          : current time [code units; divide by yr for years]
+        pending_SI : list of (config_index, t_impl, R_impl [AU], M_impl)
+    returns:
+        the planets still waiting (same format as pending_SI)
+    """
+    still_pending = []
+    for ic, t_impl, R_impl, M_impl in pending_SI:
+        if disc.interp(R_impl, disc.Sigma_D[2]) > 0:
+            planet_model.insert_new_planet(t, R_impl, M_impl, planets)
+            planets.config_index.append(ic)
+            create_planet_datasets(h5f, groups, planets, chemistry_params, Nmol, planets.N - 1)
+        else:
+            still_pending.append((ic, t_impl, R_impl, M_impl))
+    return still_pending
 
 
 # ============================================================================
@@ -761,11 +1036,78 @@ def write_not_run_file(outfile, config, calib, run_start, gi=None):
         write_star_grid_attrs(h5f, config)                                  # (Hof, 2026-10-26) M*, R*, Teff, L*, r_min, r_max
 
 
-def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
+def _planet_rate_outputs(planet_model):
+    """
+    (Hof, 2026-11-10, v2-planets step 4) The extra per-planet outputs ported
+    from run_model_student_v2.py, restricted to the channels that are actually
+    switched on in this planet_model (same conditions as v2). Returns a list of
+        (HDF5 group name, source, units, description)
+    where `source` is a key of the dict returned by
+    Bitsch2015Model._growth_rates() (a rate in Mearth per code-time unit, which
+    write_planet_row() multiplies by yr = 2 pi to get Mearth/yr), or a callable
+    f(R [AU]) -> value for a non-rate quantity.
+
+    NOTE on the two planetesimal channels: Bitsch2015Model uses, per planet and
+    per step, ONLY the larger of the in-situ and migration rates; the other one
+    is stored as 0. So at any row, at most one of Mdot_planetesimal /
+    Mdot_migration is nonzero for a given planet.
+
+    Hof's existing M_iso (pebble isolation mass; v2 calls it M_iso_pebble) and
+    M_transition are unchanged and not repeated here.
+    """
+    if planet_model is None:
+        return []
+    out = []
+    if planet_model._peb_acc:
+        out += [("Mdot_pebble_core", "Mdot_pebble_core", "Mearth/yr",
+                 "pebble accretion rate onto the core = (1 - pb_gas_f) x pebble rate"),
+                ("Mdot_pebble_env", "Mdot_pebble_env", "Mearth/yr",
+                 "pebble accretion rate onto the envelope = pb_gas_f x pebble rate")]
+    pla = planet_model._pla_acc
+    if pla is not None and pla._Mdot_insitu:
+        out += [("Mdot_planetesimal", "Mdot_planetesimal_insitu", "Mearth/yr",
+                 "in-situ planetesimal accretion rate (Fortier et al. 2013); 0 when the "
+                 "migration channel is larger"),
+                ("M_iso_planetesimal", pla.M_iso_pltsml, "Mearth",
+                 "planetesimal isolation mass at the planet's radius (PlanetesimalAccretion.M_iso_pltsml)")]
+    if pla is not None and pla._Mdot_migrate and planet_model._migrate:
+        out += [("Mdot_migration", "Mdot_planetesimal_migration", "Mearth/yr",
+                 "planetesimal accretion rate while migrating (computeMdotMigration); 0 when "
+                 "the in-situ channel is larger")]
+    if planet_model._gas_acc:
+        out += [("Mdot_gas", "Mdot_gas", "Mearth/yr",
+                 "gas envelope accretion rate (Piso & Youdin 2014 / Machida et al. 2010, "
+                 "capped at f_max x local disc Mdot)")]
+    return out
+
+
+def _growth_rates_now(planet_model, planets, chemistry_on):
+    """
+    (Hof, 2026-11-10, v2-planets step 4; copy of run_model_student_v2.py's
+    helper) Evaluate Bitsch2015Model._growth_rates() at the CURRENT planet
+    state. Used when planet_model.rates is not available or not up to date
+    (t = 0 row, before any integrate() call). Same M_Z / M_HHe split as
+    Bitsch2015Model.integrate(): M_Z = heavy-element mass [Mearth] (sum of the
+    tracked species in core + envelope when chemistry is on, else M_core);
+    M_HHe = the rest [Mearth].
+    """
+    if chemistry_on:
+        M_Z = (planets.X_core * planets.M_core).sum(0) + (planets.X_env * planets.M_env).sum(0)
+        M_HHe = planets.M_core + planets.M_env - M_Z
+    else:
+        M_Z, M_HHe = planets.M_core, planets.M_env
+    return planet_model._growth_rates(planets.R, planets.M_core, planets.M_env, M_Z, M_HHe)
+
+
+def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS, planet_model=None):
     """
     Create the HDF5 file and every dataset/group it will need, but do not
     write any data yet (see write_planet_row / write_disc_snapshot below).
     Returns the open h5py.File plus a dict of the per-planet group handles.
+
+    (Hof, 2026-11-10, v2-planets step 4) new optional argument planet_model:
+    decides which per-channel accretion-rate groups are created (only the
+    active channels; see _planet_rate_outputs()). None -> no rate groups.
     """
     planet_params = config['planets']
     chemistry_params = config['chemistry']
@@ -781,40 +1123,25 @@ def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
         h5f.create_dataset(name, shape=(0,), maxshape=(None,), dtype="f8")
 
     # ---- per-planet time series ----
+    # (Hof, 2026-11-10, v2-planets step 2) only the GROUPS are created here.
+    # The per-planet datasets inside them (Mcs/<i>, Rp/<i>, ...) used to be
+    # created here for len(planets.Mp) planets; they are now created by
+    # create_planet_datasets() when each planet is actually inserted: right
+    # after this function for planets present at t = 0 (see run_model()), and
+    # inside the time loop for "SI" planets inserted later. The group names and
+    # dataset layout are unchanged.
     groups = {}
     if planet_params['include_planets']:
-        grp_Mcs = h5f.create_group("Mcs")
-        grp_Mes = h5f.create_group("Mes")
-        grp_Rp = h5f.create_group("Rp")
-        grp_Mdotp = h5f.create_group("disk_Mdot_p")
-        grp_Xc = h5f.create_group("X_cores")
-        grp_Xe = h5f.create_group("X_envs")
-        grp_ice_lines = h5f.create_group("ice_lines")
-        grp_M_transition = h5f.create_group("M_transition")
-        grp_M_iso = h5f.create_group("M_iso")
-
-        nplanets = len(planet_params["Mp"])
-        for ip in range(nplanets):
-            grp_Mcs.create_dataset(str(ip), shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
-            grp_Mes.create_dataset(str(ip), shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
-            grp_Rp.create_dataset(str(ip), shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
-            grp_Mdotp.create_dataset(str(ip), shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
-            grp_ice_lines.create_dataset(str(ip), shape=(0, Nmol), maxshape=(None, Nmol),
-                                          dtype="f8", chunks=(1024, Nmol))
-            grp_M_transition.create_dataset(str(ip), shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
-            grp_M_iso.create_dataset(str(ip), shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
-
-            pgrp_c = grp_Xc.create_group(str(ip))
-            pgrp_e = grp_Xe.create_group(str(ip))
-            if chemistry_params["on"]:
-                nchem = Nmol  # one dataset per ice species tracked on the planet
-                for js in range(nchem):
-                    pgrp_c.create_dataset(str(js), shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
-                    pgrp_e.create_dataset(str(js), shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
-
-        groups = dict(Mcs=grp_Mcs, Mes=grp_Mes, Rp=grp_Rp, disk_Mdot_p=grp_Mdotp,
-                      X_cores=grp_Xc, X_envs=grp_Xe, ice_lines=grp_ice_lines,
-                      M_transition=grp_M_transition, M_iso=grp_M_iso)
+        for name in ("Mcs", "Mes", "Rp", "disk_Mdot_p", "X_cores", "X_envs",
+                     "ice_lines", "M_transition", "M_iso"):
+            groups[name] = h5f.create_group(name)
+        # (Hof, 2026-11-10, v2-planets step 4) one extra group per ACTIVE
+        # accretion channel (see _planet_rate_outputs()); each group carries
+        # its units and meaning as attributes, for traceability.
+        for name, _key, units, desc in _planet_rate_outputs(planet_model):
+            groups[name] = h5f.create_group(name)
+            groups[name].attrs["units"] = units
+            groups[name].attrs["description"] = desc
 
     # ---- grid (written once) ----
     h5f.create_dataset("R", data=grid.Rc)
@@ -841,10 +1168,109 @@ def create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS):
     return h5f, groups
 
 
+def _make_backfilled(grp, key, n_backfill, ncol=None):
+    """
+    (Hof, 2026-11-10, v2-planets step 2; after run_model_student_v2.py) Create
+    a growable per-planet dataset grp[str(key)] and, if the run is already
+    underway, pre-fill it with n_backfill rows of NaN, so that row k of every
+    per-planet series still corresponds to h5f["t"][k] [yr] for a planet that
+    was inserted late. NaN = "planet did not exist yet".
+        ncol : None -> 1-D series (shape (n,)); int -> 2-D (shape (n, ncol)),
+               used for ice_lines/<i> (one column per molecular species).
+    """
+    if ncol is None:
+        d = grp.create_dataset(str(key), shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
+    else:
+        d = grp.create_dataset(str(key), shape=(0, ncol), maxshape=(None, ncol),
+                               dtype="f8", chunks=(1024, ncol))
+    if n_backfill:
+        d.resize(n_backfill, axis=0)
+        d[...] = np.nan
+    return d
+
+
+def create_planet_datasets(h5f, groups, planets, chemistry_params, Nmol, ip):
+    """
+    (Hof, 2026-11-10, v2-planets step 2) Create every per-planet dataset for
+    the planet with HDF5 index `ip` (= its position in the Planets container,
+    i.e. insertion order). Same datasets as the old create_output_file() loop:
+        Mcs/<ip>, Mes/<ip>        [Mearth]   core / envelope mass
+        Rp/<ip>                   [AU]       orbital radius
+        disk_Mdot_p/<ip>          [Msun/yr]  disc Mdot at the planet
+        M_transition/<ip>, M_iso/<ip> [Mearth]
+        ice_lines/<ip>            [AU]       (rows x Nmol)
+        X_cores/<ip>/<js>, X_envs/<ip>/<js>  (chemistry on only; dimensionless)
+    backfilled with NaN up to the current length of h5f["t"].
+
+    New attributes on Rp/<ip> (so a planet can be matched back to the config
+    now that HDF5 order = insertion order):
+        config_index : position of this planet in planets.Rp / planets.Mp
+        R_insert_au  : radius where it was inserted [AU]
+        M_insert_Mearth : core mass at insertion [Mearth] ("SI": f_plt x M_birth)
+        t_form_yr    : insertion time [yr] (= implant_time / yr for planets
+                       inserted at set-up; actual insertion time for "SI")
+    """
+    n_backfill = h5f["t"].shape[0]
+
+    for name in ("Mcs", "Mes", "Rp", "disk_Mdot_p", "M_transition", "M_iso"):
+        _make_backfilled(groups[name], ip, n_backfill)
+    _make_backfilled(groups["ice_lines"], ip, n_backfill, ncol=Nmol)
+
+    # (Hof, 2026-11-10, v2-planets step 4) per-channel rate datasets, only for
+    # the groups create_output_file() made (= active channels), e.g.
+    # Mdot_gas/<ip> [Mearth/yr]; same NaN backfill as above.
+    for name in _RATE_GROUP_NAMES:
+        if name in groups:
+            _make_backfilled(groups[name], ip, n_backfill)
+
+    # (as before) a subgroup per planet is always created; it only holds
+    # datasets (one per ice species) when chemistry is on
+    pgrp_c = groups["X_cores"].create_group(str(ip))
+    pgrp_e = groups["X_envs"].create_group(str(ip))
+    if chemistry_params["on"]:
+        for js in range(Nmol):
+            _make_backfilled(pgrp_c, js, n_backfill)
+            _make_backfilled(pgrp_e, js, n_backfill)
+
+    a = groups["Rp"][str(ip)].attrs
+    a["config_index"] = int(planets.config_index[ip])
+    a["R_insert_au"] = float(planets.R[ip])
+    a["M_insert_Mearth"] = float(planets.M_core[ip])
+    a["t_form_yr"] = float(planets.t_form[ip] / yr)
+
+
+# (Hof, 2026-11-10, v2-planets step 4) every group name _planet_rate_outputs()
+# can return; used by create_planet_datasets() to find the rate groups present.
+_RATE_GROUP_NAMES = ("Mdot_pebble_core", "Mdot_pebble_env", "Mdot_planetesimal",
+                     "M_iso_planetesimal", "Mdot_migration", "Mdot_gas")
+
+
 def write_planet_row(h5f, groups, planets, planet_model, disc, grid, disk_Mdot,
-                      chemistry_params, dust_growth_params):
-    """Append one row to every per-planet dataset (called every 5 steps)."""
+                      chemistry_params, dust_growth_params, rates=None):
+    """Append one row to every per-planet dataset (called every 5 steps).
+
+    (Hof, 2026-11-10, v2-planets step 4) new optional argument `rates`: the
+    dict from Bitsch2015Model._growth_rates(). In the time loop this is
+    planet_model.rates, which integrate() evaluates at the END of the step
+    just taken (the new R, M_core, M_env). If it is None or doesn't cover every
+    current planet (t = 0 row, before any integrate()), the rates are evaluated
+    now with _growth_rates_now(). Rates are in Mearth per code-time unit and
+    are written x yr (= 2 pi) -> Mearth/yr.
+    """
+    rate_outputs = _planet_rate_outputs(planet_model)
+    if rate_outputs and planets.N > 0:
+        if rates is None or len(rates["Rdot"]) != planets.N:
+            rates = _growth_rates_now(planet_model, planets, chemistry_params["on"])
+
     for ip, planet in enumerate(planets):
+        # (step 4) per-channel rates [Mearth/yr] and planetesimal isolation mass [Mearth]
+        for name, source, _units, _desc in rate_outputs:
+            if callable(source):
+                value = float(np.squeeze(source(planet.R)))           # e.g. M_iso_pltsml(R) [Mearth]
+            else:
+                value = float(rates[source][ip]) * yr                  # Mearth/code-time -> Mearth/yr
+            grow_and_set(groups[name][str(ip)], value)
+
         grow_and_set(groups["Mcs"][str(ip)], planet.M_core.copy())
         grow_and_set(groups["Mes"][str(ip)], planet.M_env.copy())
         grow_and_set(groups["Rp"][str(ip)], planet.R.copy())
@@ -1227,15 +1653,40 @@ def run_model(config, cli_output_dir=None):
     chemistry, Natom, Nmol = build_chemistry(disc, chemistry_params, disc_params["d2g"],
                                               grid_params["nr"])
 
-    # ---- 6. planetesimals ----
-    build_planetesimals(disc, planetesimal_params)
+    # (Hof, 2026-11-10, v2-planets step 3) ORDER SWAPPED: planets (6) are now
+    # built BEFORE planetesimals (7), as in run_model_student_v2.py, because
+    # PlanetesimalFormation needs the Planets container for embryo viscous
+    # stirring (VS_embryo). Safe: nothing in build_planets() reads
+    # disc._planetesimal (DustyDisc initialises it to None), and its
+    # consistency checks read the planetesimal CONFIG, not the disc.
 
-    # ---- 7. planets ----
-    planets, planet_model = build_planets(disc, planet_params, chemistry_params, wind_params)
-    nplanets = len(planet_params["Mp"])
+    # ---- 6. planets ----
+    # (Hof, 2026-11-10, v2-planets step 1) planetesimal_params passed for the
+    # planetesimal-accretion consistency check inside build_planets()
+    # (Hof, 2026-11-10, v2-planets step 2) build_planets() now also returns
+    # pending_SI: the "SI" planets that are inserted later, inside _integrate(),
+    # once planetesimals exist at their radius ([] if none / planets off).
+    if planet_params['include_planets']:
+        planets, planet_model, pending_SI = build_planets(disc, planet_params, chemistry_params,
+                                                          wind_params, planetesimal_params)
+    else:
+        planets, planet_model, pending_SI = None, None, []
+    nplanets = len(planet_params["Mp"])   # planets REQUESTED in the config (some may be inserted late, or never)
+
+    # ---- 7. planetesimals ----
+    # (Hof, 2026-11-10, v2-planets step 3) `planets` is passed in (None when
+    # include_planets = false) so the planets can stir the planetesimals.
+    build_planetesimals(disc, planets, planetesimal_params)
 
     # ---- 8. output file (path already computed in the skip-check above) ----
-    h5f, groups = create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS)
+    h5f, groups = create_output_file(outfile, grid, config, Natom, Nmol, alpha_SS,
+                                     planet_model=planet_model)   # (step 4) for the rate groups
+    # (Hof, 2026-11-10, v2-planets step 2) per-planet datasets for the planets
+    # that already exist at t = 0 (numeric / "PA" / "TR" masses); "SI" planets
+    # get theirs when they are inserted. Nothing to backfill yet (h5f["t"] is empty).
+    if planets is not None:
+        for ip in range(planets.N):
+            create_planet_datasets(h5f, groups, planets, chemistry_params, Nmol, ip)
     h5f.attrs["alpha_guess"] = float(alpha_guess)   # starting guess (total alpha) for the calibration loop; numeric or SS-derived
     h5f.attrs["alpha_guess_mode"] = alpha_guess_mode   # 'SS' / 'config' (alpha solved), or 'fixed' (calibration solved another parameter)
     # (Hof) generic-calibration record: which parameter was solved, from what guess, to what value
@@ -1263,7 +1714,7 @@ def run_model(config, cli_output_dir=None):
     write_gi_attrs(h5f, gi)                                  # (Hof, 2026-10-20) GI flag of the initial disc
     try:
         _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, diffuse,
-                   chemistry, times, config)
+                   chemistry, times, config, pending_SI)   # (step 2) + pending_SI
     finally:
         h5f.attrs["complete"] = True
         # (Hof, 2026-10-06) wall-clock start/end of the run, ISO 8601 local time to the
@@ -1293,8 +1744,14 @@ def _disc_star_mdot(disc):
 
 
 def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, diffuse,
-               chemistry, times, config):
-    """The time-stepping loop, plus the periodic writes to `h5f`."""
+               chemistry, times, config, pending_SI=()):
+    """The time-stepping loop, plus the periodic writes to `h5f`.
+
+    (Hof, 2026-11-10, v2-planets step 2) new argument pending_SI: "SI" planets
+    from build_planets() still waiting for planetesimals; inserted by
+    _insert_pending_SI_planets() right after each planetesimal update.
+    """
+    pending_SI = list(pending_SI)
     transport_params = config['transport']
     chemistry_params = config['chemistry']
     planet_params = config['planets']
@@ -1383,6 +1840,16 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
             if disc._planetesimal:
                 disc._planetesimal.update(dt, disc, dust)
 
+            # --- (Hof, 2026-11-10, v2-planets step 2) insert pending "SI"
+            #     planets wherever Sigma_planetesimal > 0 now. Placed right
+            #     after the planetesimal update, as in run_model_student_v2.py,
+            #     so a planet is inserted in the same step its planetesimals
+            #     first appear; it is then grown by planet_model.integrate()
+            #     below in this same step. t = start of this step [code units].
+            if pending_SI and disc._planetesimal:
+                pending_SI = _insert_pending_SI_planets(t, disc, planets, planet_model, pending_SI,
+                                                        h5f, groups, chemistry_params, Nmol)
+
             # --- chemistry: adsorption/desorption given the new T, rho,
             #     dust surface area ---
             if chemistry_params["on"]:
@@ -1419,12 +1886,36 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
                 grow_and_set(h5f["Tc"], disc.T[0])
                 grow_and_set(h5f["Sigc"], disc.Sigma[0])
                 if planets is not None:
+                    # (step 4) rates from the integrate() call of this step (end-of-step
+                    # state); absent if no planet existed yet -> recomputed inside
                     write_planet_row(h5f, groups, planets, planet_model, disc, grid, disk_Mdot,
-                                      chemistry_params, dust_growth_params)
+                                      chemistry_params, dust_growth_params,
+                                      rates=getattr(planet_model, "rates", None))
 
         # --- once per requested snapshot time: full disc-profile row ---
         write_disc_snapshot(h5f, disc, config, t, Natom, Nmol)
         h5f.flush()
+
+    # (Hof, 2026-11-10, v2-planets step 2) planet bookkeeping at the end of the run.
+    #   n_planets_inserted          : planets that exist in the output (Mcs/<i>, ... for i < N)
+    #   planets_never_inserted_config_index : config positions (in planets.Rp / Mp) of "SI"
+    #       planets whose radius never had Sigma_planetesimal > 0 before t_final
+    #       (empty array if all were inserted). They have NO per-planet datasets.
+    if planets is not None:
+        # (Hof, 2026-11-10, v2-planets step 4) t_form [yr]: insertion time of each
+        # planet, in HDF5 planet-index (insertion) order, as in run_model_student_v2.py.
+        # Same numbers as the Rp/<i>.attrs["t_form_yr"] added in step 2, as one
+        # array. Only written when at least one planet was inserted (as in v2).
+        if planets.N > 0:
+            d = h5f.create_dataset("t_form", data=np.asarray(planets.t_form, dtype="f8") / yr)
+            d.attrs["units"] = "yr"
+        never = np.array([ic for ic, *_ in pending_SI], dtype=int)
+        h5f.attrs["n_planets_inserted"] = int(planets.N)
+        h5f.attrs["planets_never_inserted_config_index"] = never
+        if never.size:
+            print(f"NOTE: {never.size} \"SI\" planet(s) never inserted (no planetesimals at "
+                  f"R = {[pending_SI[k][2] for k in range(never.size)]} AU by t_final); "
+                  f"config indices {never.tolist()}.", flush=True)
 
 
 # ============================================================================
