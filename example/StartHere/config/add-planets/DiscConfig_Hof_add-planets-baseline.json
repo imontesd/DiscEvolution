@@ -1,0 +1,146 @@
+{
+  "grid": {
+    "rmin": 0.09832,
+    "rmax": 1000.0,
+    "nr": 500,
+    "spacing": "natural",
+    "smart_binning": false,
+    "type": "winds-alpha"
+  },
+  "star": {
+    "M": 0.977017,
+    "R": 3.04869,
+    "T_eff": 4378.77
+  },
+  "simulation": {
+    "run_name": "hof_add-planets_pilotv1",
+    "t_initial": 0,
+    "t_interval": [
+      0,
+      0.001,
+      0.01,
+      0.05,
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      1.0,
+      1.1,
+      1.2,
+      1.3,
+      1.4,
+      1.5,
+      1.6,
+      1.7,
+      1.8,
+      1.9,
+      2.0,
+      2.1,
+      2.2,
+      2.3,
+      2.4,
+      2.5,
+      2.6,
+      2.7,
+      2.8,
+      2.9,
+      3.0
+    ],
+    "eta_abort_hours": 24,
+    "output_dir": "/home/imontesd/scratch/output/DiscEvolution/popsynth/add-planets/pilot_v1"
+  },
+  "disc": {
+    "alpha": 0.004770000000000001,
+    "M": 0.07742,
+    "d2g": 0.01,
+    "Mdot": 1e-08,
+    "Sc": 1.0,
+    "Rd": 94.85,
+    "gamma": 1
+  },
+  "calibration": {
+    "solve_for": "none",
+    "hold": "alpha_SS",
+    "alpha_SS": 1e-05,
+    "Mdot_valid_range": null
+  },
+  "eos": {
+    "type": "IrradiatedEOS",
+    "opacity": "Zhu2012",
+    "h0": 0.025,
+    "q": -0.2,
+    "Tmax": 1500.0
+  },
+  "transport": {
+    "gas_transport": true,
+    "radial_drift": true,
+    "diffusion": true,
+    "van_leer": true
+  },
+  "dust_growth": {
+    "feedback": true,
+    "settling": true,
+    "f_ice": 1,
+    "uf_0": 500,
+    "uf_ice": 500,
+    "thresh": 0.5
+  },
+  "chemistry": {
+    "on": false,
+    "fix_mu": true,
+    "mu": 2.5,
+    "chem_model": "Equilibrium_Fixed",
+    "assert_d2g": true
+  },
+  "planets": {
+    "include_planets": true,
+    "planet_model": "Bitsch2015Model",
+    "rho_core": 5.5,
+    "Rp": [0.09832, 0.14956, 0.22752, 0.3461, 0.52648, 0.80088, 1.2183, 1.8533, 2.8192, 4.2885, 6.5237, 9.9238, 15.096, 22.964, 34.933, 53.14, 80.836, 122.97, 187.06, 284.55],
+    "Mp": ["SI",    "SI",    "SI",    "SI",   "SI",    "SI",    "SI",   "SI",   "SI",   "SI",   "SI",   "SI",   "SI",   "SI",   "SI",   "SI",  "SI",   "SI",   "SI",   "SI"  ],
+    "f_plt": 400,
+    "implant_time": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "pb_gas_f": 0.1,
+    "migrate": true,
+    "pebble_accretion": true,
+    "gas_accretion": true,
+    "planetesimal_accretion_migrate": true,
+    "planetesimal_accretion_insitu": true},
+  "planetesimal": {
+    "active": true,
+    "diameter": 200,
+    "St_min": 0.01,
+    "St_max": 10,
+    "pla_eff": 0.1
+  },
+  "winds": {
+    "on": true,
+    "psi_DW": 476.0,
+    "e_rad": 0.967521
+  },
+  "calibration_result": {
+    "solve_for": "none",
+    "guess": "NaN",
+    "guess_mode": "fixed",
+    "value": "NaN",
+    "Mdot_target": 1e-08,
+    "Mdot": 7.409819123871371e-08,
+    "Mdot_relerr": 6.409819123871371,
+    "n_evals": 1,
+    "n_roots": 0,
+    "hold": "alpha_SS",
+    "alpha_SS_fixed": 1e-05,
+    "t_visc_Rd_yr": 722133562.3625017,
+    "Mdot_in_range": true,
+    "Mdot_valid_range": [
+      "-Infinity",
+      "Infinity"
+    ],
+    "Mdot_range_check": false
+  }
+}
