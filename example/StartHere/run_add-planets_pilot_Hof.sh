@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=def-mbalogh
-#SBATCH --time=7-00:00:00            # (2026-11-12, sim-time step 2) 7 d, was 24 h: the disc 244 test ran ~0.08 s/step at
+#SBATCH --time=1-00:00:00            # (2026-11-12, sim-time step 2) 7 d, was 24 h: the disc 244 test ran ~0.08 s/step at
                                      # dt ~0.93 yr -> 3 Myr ~ 3.2e6 steps ~ 70 h, 5 Myr ~ 5.4e6 steps ~ 5 d (if dt stays
                                      # ~1 yr). Applies to EACH array task. Lower it once the timing CSVs give the real cost.
 #SBATCH --array=0-1                  # (2026-11-12, sim-time step 2) task 0 -> T_END_LIST[0] = 3 Myr, task 1 -> [1] = 5 Myr
