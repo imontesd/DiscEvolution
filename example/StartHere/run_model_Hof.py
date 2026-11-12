@@ -340,6 +340,32 @@ with one further addition -- see that file's own docstring.)
    * new dataset t_form [yr] (attr units): insertion time per planet, in HDF5 planet-index order
      (only if >= 1 planet was inserted).
 
+-(2026-11-12, sim-time step 1) Optional per-timestep TIMING STREAM, for trial runs that size the
+ wall-clock cost of a disc and help choose abort criteria. OFF by default (absent config key = off),
+ so production runs pay only one `if` per step. Switched on by either
+     config["simulation"]["stream_timing"] = true          (optional key, bool)
+     --stream_timing / --no-stream_timing                  (CLI, overrides the config)
+ and thinned by
+     config["simulation"]["stream_timing_every"] = N       (optional key, int >= 1, default 1 = every step)
+     --stream_timing_every N                               (CLI)
+ When on, _integrate() writes one CSV row per recorded step to
+     <output_dir>/<output filename without .h5>_timing.csv
+ (path also stored as HDF5 attr "timing_csv"), columns:
+     step        : step number n (1 = first step)                                      [-]
+     t_yr        : simulation time at the END of the step                              [yr]
+     dt_yr       : timestep actually taken (may be cut to land on a snapshot time)     [yr]
+     dt_phys_yr  : physics-limited timestep (min of gas / drift max_timestep)          [yr]
+     wall_s      : wall-clock time since the start of the time loop, INCLUDING HDF5
+                   writes and snapshots (excludes calibration / setup before the loop) [s]
+     eta_s       : ETA, step-count estimator = (wall_s / step) * (t_end - t) / dt_phys
+                   (same formula as the ETA printed every 1000 steps, but every step and
+                   with wall_s, which includes I/O)                                     [s]
+     eta_rate_s  : ETA, sim-rate estimator = wall_s * (t_end - t) / t                   [s]
+ t_end = last requested snapshot time (times[-1]). "#" header lines give t_end, loop start time and
+ the setting; a "# loop_end" footer gives the step count and loop wall time (also written if the run
+ raised). Rows are buffered (1 MB) and flushed every 1000 rows, so `tail -f` lags <= 1000 steps.
+ New helpers _open_timing_stream(), _close_timing_stream(); new CLI flags above. Physics unchanged.
+
 WHAT THIS RUNS
 --------------
 This script reproduces exactly one physical setup out of the several that
@@ -1712,10 +1738,14 @@ def run_model(config, cli_output_dir=None):
         h5f.attrs["calib_hold"] = info['hold']
         h5f.attrs["calib_alpha_SS_fixed"] = info['alpha_SS_fixed']   # dimensionless; NaN when calib_hold = 'alpha'
     write_gi_attrs(h5f, gi)                                  # (Hof, 2026-10-20) GI flag of the initial disc
+    # (Hof, 2026-11-12, sim-time step 1) optional per-step timing CSV; None (off) unless
+    # simulation.stream_timing is true. Closed in the finally below, so its footer survives a crash.
+    timing = _open_timing_stream(h5f, config, times)
     try:
         _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, diffuse,
-                   chemistry, times, config, pending_SI)   # (step 2) + pending_SI
+                   chemistry, times, config, pending_SI, timing)   # (step 2) + pending_SI; (sim-time 1) + timing
     finally:
+        _close_timing_stream(timing)                         # (sim-time step 1) no-op when off
         h5f.attrs["complete"] = True
         # (Hof, 2026-10-06) wall-clock start/end of the run, ISO 8601 local time to the
         # second (e.g. "2026-10-06T14:03:12"); duration = run_end - run_start, which
@@ -1743,13 +1773,73 @@ def _disc_star_mdot(disc):
     return Mdot
 
 
+# ============================================================================
+# (Hof, 2026-11-12, sim-time step 1) optional per-step timing stream
+# ============================================================================
+# Two helpers. run_model() opens the stream just before _integrate() and closes
+# it in the SAME try/finally that marks the .h5 complete, so the "# loop_end"
+# footer is written even if _integrate() raises. _integrate() writes the rows.
+# The stream is a CSV next to the .h5 file; see the change-log entry
+# "sim-time step 1" in the module docstring for the column definitions and
+# units. OFF unless simulation.stream_timing is true.
+
+TIMING_FLUSH_EVERY = 1000          # rows; flush the CSV to disk this often (tail -f lag, in steps)
+
+
+def _open_timing_stream(h5f, config, times):
+    """Open the timing CSV if config['simulation']['stream_timing'] is true.
+
+    Returns None when the stream is off, else a small state dict shared with
+    _integrate() (which updates it) and _close_timing_stream():
+        fh     : open text file handle
+        every  : record every `every`-th step (int >= 1)
+        n      : steps taken so far (updated by _integrate)       [-]
+        wall_s : loop wall time so far (updated by _integrate)    [s]
+        rows   : rows written so far (for the periodic flush)     [-]
+    The CSV path is <h5 path without .h5>_timing.csv; its basename is also
+    stored as the HDF5 attribute "timing_csv".
+    """
+    sim_params = config['simulation']
+    if not sim_params.get('stream_timing', False):        # absent key -> off (production default)
+        return None
+    every = int(sim_params.get('stream_timing_every', 1))  # steps between recorded rows
+    if every < 1:
+        raise ValueError(f"simulation.stream_timing_every must be >= 1, got {every}")
+    path = os.path.splitext(h5f.filename)[0] + "_timing.csv"
+    fh = open(path, "w", buffering=1 << 20)                  # 1 MB buffer: no syscall per row
+    h5f.attrs["timing_csv"] = os.path.basename(path)
+    t_end_yr = float(times[-1]) / yr                         # yr, last requested snapshot
+    fh.write(f"# timing stream from run_model_Hof.py (sim-time step 1); h5 file: {os.path.basename(h5f.filename)}\n")
+    fh.write(f"# t_end_yr: {t_end_yr:.10g}\n")
+    fh.write(f"# stream_timing_every: {every}\n")
+    fh.write(f"# loop_start: {datetime.now().isoformat(timespec='seconds')}\n")
+    fh.write("# units: t_yr, dt_yr, dt_phys_yr [yr]; wall_s, eta_s, eta_rate_s [s]\n")
+    fh.write("step,t_yr,dt_yr,dt_phys_yr,wall_s,eta_s,eta_rate_s\n")
+    print(f"Timing stream ON (every {every} step(s)): {path}", flush=True)
+    return {"fh": fh, "every": every, "n": 0, "wall_s": 0.0, "rows": 0}
+
+
+def _close_timing_stream(timing):
+    """Write the '# loop_end' footer (steps taken, loop wall time [s]) and close the CSV.
+    No-op when the stream is off (timing is None)."""
+    if timing is None:
+        return
+    timing["fh"].write(f"# loop_end: {datetime.now().isoformat(timespec='seconds')}, "
+                       f"n_steps: {timing['n']}, wall_s: {timing['wall_s']:.6g}\n")
+    timing["fh"].close()
+
+
 def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, diffuse,
-               chemistry, times, config, pending_SI=()):
+               chemistry, times, config, pending_SI=(), timing=None):
     """The time-stepping loop, plus the periodic writes to `h5f`.
 
     (Hof, 2026-11-10, v2-planets step 2) new argument pending_SI: "SI" planets
     from build_planets() still waiting for planetesimals; inserted by
     _insert_pending_SI_planets() right after each planetesimal update.
+
+    (Hof, 2026-11-12, sim-time step 1) new argument timing: state dict from
+    _open_timing_stream(), or None (stream off, the default). When given, one
+    CSV row per `timing['every']` steps is written at the end of the step.
     """
     pending_SI = list(pending_SI)
     transport_params = config['transport']
@@ -1777,6 +1867,9 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
     t, n = 0.0, 0
     wall_spent = 0.0
     last_eta_hours, last_eta_minutes = 0, 0
+    # (Hof, 2026-11-12, sim-time step 1) timing-stream bookkeeping; only used when timing is not None.
+    loop_start = time.time()              # s (epoch); wall_s in the CSV = time.time() - loop_start
+    t_end = times[-1]                     # code time units; the run's final snapshot time
 
     for ti in times:
         while t < ti:
@@ -1867,6 +1960,24 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
             t += dt
             n += 1
             wall_spent += time.time() - step_start
+
+            # --- (Hof, 2026-11-12, sim-time step 1) timing stream: one CSV row per
+            #     timing['every'] steps. wall_s counts the WHOLE loop so far (incl. the
+            #     HDF5 writes of earlier steps), so ETA vs (final wall_s - wall_s) is a fair
+            #     test of the estimators. Units: t, dt, dt_phys / yr -> yr; wall, ETA in s. ---
+            if timing is not None:
+                wall_s = time.time() - loop_start                         # s
+                timing["n"], timing["wall_s"] = n, wall_s                 # for the loop_end footer
+                if n % timing["every"] == 0:
+                    dt_eta = dt_physics if dt_physics < float('inf') else dt   # code units
+                    t_left = max(t_end - t, 0.0)                          # code units, sim time still to go
+                    eta_s = (wall_s / n) * (t_left / max(dt_eta, 1e-300))  # s, step-count estimator
+                    eta_rate_s = wall_s * t_left / t                      # s, sim-rate estimator (t > 0 here)
+                    timing["fh"].write(f"{n},{t / yr:.10g},{dt / yr:.6g},{dt_eta / yr:.6g},"
+                                       f"{wall_s:.6g},{eta_s:.6g},{eta_rate_s:.6g}\n")
+                    timing["rows"] += 1
+                    if timing["rows"] % TIMING_FLUSH_EVERY == 0:
+                        timing["fh"].flush()                              # make rows visible to tail -f
 
             if (n % 1000) == 0:
                 print(f"\rNstep: {n}", flush=True)
@@ -1979,6 +2090,13 @@ Examples:
                         help="Override grid.rmin (inner edge of the radial grid) [AU]")
     parser.add_argument("--rmax", type=float, default=None,
                         help="Override grid.rmax (outer edge of the radial grid) [AU]")
+    # (Hof, 2026-11-12, sim-time step 1) per-step timing CSV (see module docstring). Default None =
+    # keep the config (absent key = off). --stream_timing turns it on, --no-stream_timing off.
+    parser.add_argument("--stream_timing", action=argparse.BooleanOptionalAction, default=None,
+                        help="Override simulation.stream_timing: write <output>_timing.csv with step, t, dt, "
+                             "wall time and ETA per step (off by default)")
+    parser.add_argument("--stream_timing_every", type=int, default=None,
+                        help="Override simulation.stream_timing_every: record every N-th step (default 1)")
 
     args = parser.parse_args()
 
@@ -2001,6 +2119,8 @@ Examples:
         ("star", "T_eff"): args.Teff,       # (Hof, 2026-10-26) K
         ("grid", "rmin"): args.rmin,        # (Hof, 2026-10-26) AU, inner edge of the grid
         ("grid", "rmax"): args.rmax,        # (Hof, 2026-10-26) AU, outer edge of the grid
+        ("simulation", "stream_timing"): args.stream_timing,              # (Hof, 2026-11-12) bool, timing CSV on/off
+        ("simulation", "stream_timing_every"): args.stream_timing_every,  # (Hof, 2026-11-12) int, steps per CSV row
     }
     for (section, key), value in overrides.items():
         if value is not None:
