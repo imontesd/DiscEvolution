@@ -366,6 +366,28 @@ with one further addition -- see that file's own docstring.)
  raised). Rows are buffered (1 MB) and flushed every 1000 rows, so `tail -f` lags <= 1000 steps.
  New helpers _open_timing_stream(), _close_timing_stream(); new CLI flags above. Physics unchanged.
 
+-(2026-11-13) Optional WALL-CLOCK LIMIT per run, for the 500-disc planet sweep (stop a disc that is too
+ slow, keep everything it computed). OFF unless set:
+     config["simulation"]["wall_limit_hours"] = 48        (optional key, float hours; absent / null = no limit)
+     --wall_limit_hours 48                                (CLI, overrides the config)
+ The clock starts at the top of run_model() (run_start), so the limit covers calibration + setup + the
+ time loop, i.e. the same duration as run_end - run_start. _integrate() compares time.time() with the
+ deadline after EVERY step (one clock read, ~0.1 us vs ~80 ms per step). When it is passed, the run stops
+ cleanly at the end of that step:
+   * a full disc-profile snapshot is written at the stop time t_stop (an extra last row of time_snap,
+     Sigma_G, T, ...; t_stop is generally NOT one of the requested snapshot times);
+   * the per-step series written so far (t, disk_Mdot_star, planets, ...) are kept as they are;
+   * the end-of-run planet bookkeeping runs as normal (t_form, n_planets_inserted,
+     planets_never_inserted_config_index; planets not yet inserted at t_stop count as never inserted);
+   * the timing CSV (if on) gets its "# loop_end" footer; the run summary prints a STOPPED line.
+ New HDF5 attrs (written for EVERY evolved run, so a sweep can be filtered on them; the not-run files of
+ Mdot-out-of-range discs do not have them):
+     wall_limit_hours      [h]   the limit (NaN = none)
+     stopped_by_wall_limit [bool] True if the run was stopped by it
+     t_stop_yr             [yr]  simulation time reached (= final requested time for a normal run)
+ The file still gets complete = True (as the Mdot-out-of-range files), so re-launching a sweep SKIPS a
+ stopped disc rather than spending another 48 h on it; delete its .h5 to force a re-run. Physics unchanged.
+
 WHAT THIS RUNS
 --------------
 This script reproduces exactly one physical setup out of the several that
@@ -1741,12 +1763,25 @@ def run_model(config, cli_output_dir=None):
     # (Hof, 2026-11-12, sim-time step 1) optional per-step timing CSV; None (off) unless
     # simulation.stream_timing is true. Closed in the finally below, so its footer survives a crash.
     timing = _open_timing_stream(h5f, config, times)
+    # (Hof, 2026-11-13) optional wall-clock limit [h] -> absolute deadline [s since the epoch], counted from
+    # run_start (top of run_model(), so calibration + setup count too). None / absent = no limit.
+    wall_limit_hours = sim_params.get('wall_limit_hours')
+    wall_deadline = None
+    if wall_limit_hours is not None:
+        wall_deadline = run_start.timestamp() + float(wall_limit_hours) * 3600     # s (epoch)
+        print(f"Wall-clock limit: {float(wall_limit_hours):g} h from run start "
+              f"(stop after {datetime.fromtimestamp(wall_deadline).isoformat(sep=' ', timespec='seconds')})",
+              flush=True)
+    h5f.attrs["wall_limit_hours"] = float(wall_limit_hours) if wall_limit_hours is not None else np.nan   # h
     try:
         _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, diffuse,
-                   chemistry, times, config, pending_SI, timing)   # (step 2) + pending_SI; (sim-time 1) + timing
+                   chemistry, times, config, pending_SI, timing,   # (step 2) + pending_SI; (sim-time 1) + timing
+                   wall_deadline)                                   # (2026-11-13) + wall-clock limit
     finally:
         _close_timing_stream(timing)                         # (sim-time step 1) no-op when off
         h5f.attrs["complete"] = True
+        _stopped = bool(h5f.attrs.get("stopped_by_wall_limit", False))   # (2026-11-13) for the summary below
+        _t_stop_yr = float(h5f.attrs.get("t_stop_yr", np.nan))            # yr
         # (Hof, 2026-10-06) wall-clock start/end of the run, ISO 8601 local time to the
         # second (e.g. "2026-10-06T14:03:12"); duration = run_end - run_start, which
         # includes calibration + setup (run_start is taken at the top of run_model()).
@@ -1763,6 +1798,9 @@ def run_model(config, cli_output_dir=None):
         print(f"  end      : {run_end.isoformat(sep=' ', timespec='seconds')}")
         print(f"  duration : {run_seconds // 3600:d}:{(run_seconds % 3600) // 60:02d}:{run_seconds % 60:02d}"
               f" (h:mm:ss, incl. calibration + setup)")
+        if _stopped:                                      # (Hof, 2026-11-13) wall-clock-limit stop
+            print(f"  STOPPED  : wall-clock limit {float(wall_limit_hours):g} h reached at t = "
+                  f"{_t_stop_yr / 1e6:.6g} Myr (of {times[-1] / (1e6 * yr):g} Myr requested)")
         print("=" * 70, flush=True)
 
 
@@ -1830,7 +1868,7 @@ def _close_timing_stream(timing):
 
 
 def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, diffuse,
-               chemistry, times, config, pending_SI=(), timing=None):
+               chemistry, times, config, pending_SI=(), timing=None, wall_deadline=None):
     """The time-stepping loop, plus the periodic writes to `h5f`.
 
     (Hof, 2026-11-10, v2-planets step 2) new argument pending_SI: "SI" planets
@@ -1840,6 +1878,12 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
     (Hof, 2026-11-12, sim-time step 1) new argument timing: state dict from
     _open_timing_stream(), or None (stream off, the default). When given, one
     CSV row per `timing['every']` steps is written at the end of the step.
+
+    (Hof, 2026-11-13) new argument wall_deadline: absolute wall-clock time
+    [s since the epoch, as time.time()] at which to stop, or None (no limit,
+    the default). Checked after every step; when passed, the current step is
+    finished, a disc snapshot is written at that time and the loop ends.
+    Sets HDF5 attrs stopped_by_wall_limit [bool] and t_stop_yr [yr].
     """
     pending_SI = list(pending_SI)
     transport_params = config['transport']
@@ -1870,6 +1914,7 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
     # (Hof, 2026-11-12, sim-time step 1) timing-stream bookkeeping; only used when timing is not None.
     loop_start = time.time()              # s (epoch); wall_s in the CSV = time.time() - loop_start
     t_end = times[-1]                     # code time units; the run's final snapshot time
+    stopped = False                       # (Hof, 2026-11-13) True once wall_deadline has been passed
 
     for ti in times:
         while t < ti:
@@ -1979,6 +2024,29 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
                     if timing["rows"] % TIMING_FLUSH_EVERY == 0:
                         timing["fh"].flush()                              # make rows visible to tail -f
 
+            # --- (Hof, 2026-11-13) wall-clock limit: stop after this step if the deadline has passed.
+            #     Placed AFTER the timing row (so the CSV has the last step) and BEFORE the every-5-steps
+            #     series write below would be skipped by `break` -- so write that row here first, then
+            #     leave the while loop; the snapshot after the loop is then taken at t_stop = t. ---
+            if wall_deadline is not None and time.time() > wall_deadline:
+                stopped = True
+                limit_h = float(config['simulation']['wall_limit_hours'])        # h
+                elapsed_h = limit_h + (time.time() - wall_deadline) / 3600         # h since run_start
+                print(f"\nSTOPPED by wall-clock limit: {elapsed_h:.3f} h elapsed > wall_limit_hours = "
+                      f"{limit_h:g} h, at t = {t / yr:.6g} yr "
+                      f"({t / (1e6 * yr):.6g} Myr), step {n}. Writing a final snapshot and closing.", flush=True)
+                disk_Mdot = _disc_star_mdot(disc)                         # last per-step series row, at t_stop
+                grow_and_set(h5f["t"], t / yr)  # years
+                grow_and_set(h5f["disk_Mdot_star"], disk_Mdot[0])
+                grow_and_set(h5f["disk_Mass"], disc.Mtot())
+                grow_and_set(h5f["Tc"], disc.T[0])
+                grow_and_set(h5f["Sigc"], disc.Sigma[0])
+                if planets is not None:
+                    write_planet_row(h5f, groups, planets, planet_model, disc, grid, disk_Mdot,
+                                      chemistry_params, dust_growth_params,
+                                      rates=getattr(planet_model, "rates", None))
+                break
+
             if (n % 1000) == 0:
                 print(f"\rNstep: {n}", flush=True)
                 print(f"\rTime: {t/(1e6*yr)} Myr", flush=True)
@@ -2004,8 +2072,15 @@ def _integrate(h5f, groups, disc, grid, star, planets, planet_model, gas, dust, 
                                       rates=getattr(planet_model, "rates", None))
 
         # --- once per requested snapshot time: full disc-profile row ---
+        # (Hof, 2026-11-13) after a wall-limit stop this is the FINAL snapshot, at t_stop (not a requested time)
         write_disc_snapshot(h5f, disc, config, t, Natom, Nmol)
         h5f.flush()
+        if stopped:                       # (Hof, 2026-11-13) wall-clock limit: skip the remaining snapshot times
+            break
+
+    # (Hof, 2026-11-13) wall-clock-limit attrs, written for every run (False / final time when not stopped)
+    h5f.attrs["stopped_by_wall_limit"] = bool(stopped)
+    h5f.attrs["t_stop_yr"] = float(t / yr)                    # yr, simulation time reached
 
     # (Hof, 2026-11-10, v2-planets step 2) planet bookkeeping at the end of the run.
     #   n_planets_inserted          : planets that exist in the output (Mcs/<i>, ... for i < N)
@@ -2097,6 +2172,10 @@ Examples:
                              "wall time and ETA per step (off by default)")
     parser.add_argument("--stream_timing_every", type=int, default=None,
                         help="Override simulation.stream_timing_every: record every N-th step (default 1)")
+    # (Hof, 2026-11-13) wall-clock limit per run (see module docstring); default None = keep the config
+    parser.add_argument("--wall_limit_hours", type=float, default=None,
+                        help="Override simulation.wall_limit_hours: stop the run (saving all output so far) once "
+                             "this many hours have passed since it started [h]")
 
     args = parser.parse_args()
 
@@ -2121,6 +2200,7 @@ Examples:
         ("grid", "rmax"): args.rmax,        # (Hof, 2026-10-26) AU, outer edge of the grid
         ("simulation", "stream_timing"): args.stream_timing,              # (Hof, 2026-11-12) bool, timing CSV on/off
         ("simulation", "stream_timing_every"): args.stream_timing_every,  # (Hof, 2026-11-12) int, steps per CSV row
+        ("simulation", "wall_limit_hours"): args.wall_limit_hours,        # (Hof, 2026-11-13) h, wall-clock limit
     }
     for (section, key), value in overrides.items():
         if value is not None:
