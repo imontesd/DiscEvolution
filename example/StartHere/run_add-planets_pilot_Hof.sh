@@ -76,6 +76,13 @@
 #     sbatch run_add-planets_pilot_Hof.sh                                   # both runs (array tasks 0 and 1)
 #     SLURM_ARRAY_TASK_ID=1 DRY_RUN=1 bash run_add-planets_pilot_Hof.sh     # check the 5 Myr config + command
 #     T_END_LIST="0.0003 0.0005" sbatch run_add-planets_pilot_Hof.sh        # short test of the pair
+#
+# (Hof, 2026-11-13) WALL_LIMIT_HOURS: optional wall-clock limit per run [h], written into the per-run config as
+#   simulation.wall_limit_hours (run_model_Hof.py, change log 2026-11-13: the run stops after that many hours, saving
+#   all output so far, and sets HDF5 attr stopped_by_wall_limit). Empty (default) = no limit, as for the timing trial.
+#   Also used by run_popsynth_add-planets_v5_Hof.sh, which calls THIS script once per disc (DISC_ID, RUN_TAG,
+#   T_END_MYR, OUTDIR, BASE_CONFIG, WALL_LIMIT_HOURS, STREAM_TIMING from its environment), so the seed and config
+#   logic exists in one place only.
 
 set -euo pipefail
 
@@ -95,6 +102,7 @@ T_END_MYR="${T_END_MYR:-}"                   # Myr; empty = keep the base config
 T_END_LIST="${T_END_LIST:-3 5}"              # (2026-11-12, sim-time step 2) Myr, end time per array task (space-separated)
 STREAM_TIMING="${STREAM_TIMING:-1}"          # (2026-11-12, sim-time step 2) 1 = write the per-step timing CSV, 0 = off
 STREAM_EVERY="${STREAM_EVERY:-1}"            # (2026-11-12, sim-time step 2) steps per timing-CSV row (1 = every step)
+WALL_LIMIT_HOURS="${WALL_LIMIT_HOURS:-}"     # (2026-11-13) h, wall-clock limit per run; empty = none
 DRY_RUN="${DRY_RUN:-0}"                      # 1 = write and print the config and command, run nothing
 
 # (2026-11-12, sim-time step 2) array task -> end time; then tag the run with it so the 3 and 5 Myr outputs differ
@@ -121,10 +129,11 @@ GEN_CONFIG="$OUTDIR/config_used/DiscConfig_Hof_add-planets-${RUN_TAG}_disc${DISC
 
 # ---- steps 1-3: read the disc, build the seeds, write the config; prints the CLI overrides on its LAST line ----
 OVERRIDES_LINE=$(python3 - "$DRAWS_CSV" "$BASE_CONFIG" "$GEN_CONFIG" "$DISC_ID" "$RUN_NAME" "$OUTDIR" \
-                          "$P_MIN_YR" "$P_MAX_YR" "$N_P" "$T_END_MYR" "$STREAM_TIMING" "$STREAM_EVERY" <<'EOF'
+                          "$P_MIN_YR" "$P_MAX_YR" "$N_P" "$T_END_MYR" "$STREAM_TIMING" "$STREAM_EVERY" \
+                          "$WALL_LIMIT_HOURS" <<'EOF'
 import csv, json, math, sys
 (draws_csv, base_config, gen_config, disc_id, run_name, outdir,
- p_min, p_max, n_p, t_end, stream_timing, stream_every) = sys.argv[1:]
+ p_min, p_max, n_p, t_end, stream_timing, stream_every, wall_limit_hours) = sys.argv[1:]
 disc_id, p_min, p_max, n_p = int(disc_id), float(p_min), float(p_max), int(n_p)
 
 # 1. the disc's row of the draws CSV
@@ -178,6 +187,9 @@ if t_end:                                                 # cut the snapshot lis
 # so config_used/ alone reproduces the run
 cfg["simulation"]["stream_timing"] = stream_timing == "1"
 cfg["simulation"]["stream_timing_every"] = int(stream_every)   # steps per CSV row
+# (2026-11-13) wall-clock limit [h] (run_model_Hof.py stops the run and keeps its output); None = no limit
+cfg["simulation"]["wall_limit_hours"] = float(wall_limit_hours) if wall_limit_hours else None
+cfg["simulation"].pop("eta_abort_hours", None)            # (2026-11-13) old key, read by nothing; avoid confusion
 cfg["_provenance_Hof"] = {                                # ignored by run_model_Hof.py; for the reader
     "made_by": "run_add-planets_pilot_Hof.sh", "draws_csv": draws_csv, "disc_id": disc_id,
     "base_config": base_config, "seed_periods_yr": [p_min, p_max, n_p],
@@ -193,7 +205,8 @@ print(f"Seeds: {len(a_in)} of {n_p} periods inside the grid ({a_in[0]:.4g}-{a_in
 print("Rp [au] = " + ", ".join(f"{a:.4g}" for a in a_in), file=sys.stderr)
 _ti = cfg["simulation"]["t_interval"]                     # (sim-time step 2) snapshot summary, Myr
 print(f"Snapshots: {len(_ti)} times, {_ti[0]} ... {_ti[-1]} Myr (last five: {_ti[-5:]}); timing stream "
-      f"{'ON, every ' + stream_every + ' step(s)' if stream_timing == '1' else 'OFF'}", file=sys.stderr)
+      f"{'ON, every ' + stream_every + ' step(s)' if stream_timing == '1' else 'OFF'}; wall-clock limit "
+      f"{wall_limit_hours + ' h' if wall_limit_hours else 'none'}", file=sys.stderr)
 # last line on stdout: the CLI overrides (same values as in the config), read by bash below
 print(f"--M {M0!r} --Rd {R0!r} --psi_DW {psi!r} --e_rad {erad!r} --alpha_SS {aSS!r} "
       f"--Mstar {Ms!r} --Rstar {Rs!r} --Teff {Teff!r} --rmin {rmin!r} --rmax {rmax!r}")
